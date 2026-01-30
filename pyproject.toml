@@ -1,0 +1,34 @@
+[project]
+name = "nanoom"
+version = "0.1.0"
+description = "balanced data splitting"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "jax>=0.9.0",
+    "polars>=1.37.1",
+    "pulp>=3.3.0",
+    "scikit-learn>=1.8.0",
+]
+
+
+[project.optional-dependencies]
+cuda13 = [
+    "jax[cuda13]>=0.9.0",
+]
+chem = [
+    "rdkit>=2025.9.3",
+]
+
+dev = [
+    "nanoom[chem]",
+    "nanoom[cuda13]",
+    "ruff>=0.14.14",
+]
+
+
+[tool.setuptools]
+package-dir = {"" = "."}
+
+[tool.setuptools.packages.find]
+where = ["."]
