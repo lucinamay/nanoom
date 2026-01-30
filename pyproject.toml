@@ -21,6 +21,7 @@ chem = [
 ]
 
 dev = [
+    "jaxopt>=0.8.5",
     "nanoom[chem]",
     "nanoom[cuda13]",
     "ruff>=0.14.14",
