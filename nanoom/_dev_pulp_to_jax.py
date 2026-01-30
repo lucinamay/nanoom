@@ -3,6 +3,12 @@ JAX-based reimplementation of cluster balancing via linear programming.
 
 This module provides a functional, efficient alternative to the PuLP-based
 implementation for balanced assignment of clusters to ML subsets.
+
+DETERMINISM GUARANTEE:
+All functions are fully deterministic given the same input and seed parameter.
+JAX operations are deterministic by default, and any randomness (initialization
+perturbation) is controlled via the seed parameter. Running with the same seed
+will always produce identical results.
 """
 
 from functools import partial
@@ -10,7 +16,6 @@ from typing import Sequence
 
 import jax
 import jax.numpy as jnp
-import numpy as np
 from jax import jit
 from jax.typing import ArrayLike
 from jaxopt import ProjectedGradient
@@ -29,6 +34,7 @@ def balance_data_jax(
     tolerance: float = 1e-6,
     learning_rate: float = 0.01,
     verbose: bool = False,
+    seed: int = 0,
 ) -> list[int]:
     """
     Assign clusters to ML subsets to balance task/compound distributions.
@@ -49,6 +55,7 @@ def balance_data_jax(
         tolerance: Convergence tolerance for objective change
         learning_rate: Step size for gradient descent
         verbose: Print optimization progress
+        seed: Random seed for reproducibility (default: 0)
 
     Returns:
         List of length N mapping each initial cluster to final subset (1-indexed)
@@ -94,6 +101,7 @@ def balance_data_jax(
         tolerance,
         learning_rate,
         verbose,
+        seed,
     )
 
     # Convert soft assignment to hard assignment
@@ -232,6 +240,7 @@ def _optimize_assignment(
     tolerance: float,
     learning_rate: float,
     verbose: bool,
+    seed: int,
 ) -> jnp.ndarray:
     """
     Optimize cluster-to-subset assignment using projected gradient descent.
@@ -240,14 +249,25 @@ def _optimize_assignment(
         PuLP's CBC solver finds optimal binary assignment matrix X (N x S)
         subject to constraints. This uses continuous relaxation with
         projection to simplex per cluster.
+
+    The function is fully deterministic given the same seed.
     """
     M, N = A.shape
     S = len(fractional_sizes)
 
-    # Initialize: assign each cluster approximately to target distribution
-    # Legacy: PuLP starts with LP relaxation
-    # Heuristic: distribute clusters proportionally to fractional_sizes
+    # Initialize deterministically with optional small perturbation for diversity
+    # Legacy: PuLP starts with LP relaxation (deterministic)
+    # Base initialization: distribute clusters proportionally to fractional_sizes
     X_init = jnp.tile(fractional_sizes, (N, 1))  # (N, S)
+
+    # Add small deterministic perturbation to avoid symmetry-induced local minima
+    # This helps optimization escape from uniform initialization
+    if seed is not None:
+        key = jax.random.PRNGKey(seed)
+        # Small perturbation: ±5% of fractional_sizes
+        perturbation = jax.random.uniform(key, shape=(N, S), minval=0.95, maxval=1.05)
+        X_init = X_init * perturbation
+
     X_init = _project_to_feasible(X_init, S, N)
 
     # Define projected objective
@@ -309,11 +329,16 @@ def _extract_hard_assignment(
 
     Returns:
         List of length N with subset assignments (1-indexed)
+
+    Note:
+        argmax breaks ties by choosing the lowest index, which is deterministic
+        and consistent with typical LP solver behavior.
     """
     X = X.reshape(N, S)
 
     # For each cluster, assign to subset with highest probability
     # Legacy: Extracts the single subset where binary variable = 1
+    # Note: jnp.argmax returns the first (lowest-indexed) maximum in case of ties
     assignments = jnp.argmax(X, axis=1)  # (N,)
 
     # Convert to 1-indexed (legacy uses 1-based indexing)
@@ -328,13 +353,14 @@ def _extract_hard_assignment(
 
 
 def balance_data_jax_rounded(
-    tasks_vs_clusters_array: np.ndarray,
+    tasks_vs_clusters_array: jnp.ndarray,
     sizes: Sequence[int] = (1,),
     equal_weight_perc_compounds_as_tasks: bool = False,
     max_iterations: int = 5000,
     tolerance: float = 1e-6,
     learning_rate: float = 0.02,
     verbose: bool = False,
+    seed: int = 0,
 ) -> list[int]:
     """
     Alternative implementation with iterative rounding for better discrete solutions.
@@ -343,6 +369,8 @@ def balance_data_jax_rounded(
     to encourage discrete solutions closer to the integer programming result.
 
     This is more experimental but may yield solutions closer to PuLP's optimal.
+
+    Fully deterministic given the same seed.
     """
     fractional_sizes = jnp.array(sizes) / jnp.sum(jnp.array(sizes))
     S = len(sizes)
@@ -367,6 +395,7 @@ def balance_data_jax_rounded(
         tolerance,
         learning_rate,
         verbose,
+        seed,
     )
 
     # Greedy rounding: for each cluster, assign to argmax
@@ -381,13 +410,14 @@ def balance_data_jax_rounded(
 
 
 def balance_data_from_tasks_vs_clusters_array_jax(
-    tasks_vs_clusters_array: np.ndarray,
+    tasks_vs_clusters_array: jnp.ndarray,
     sizes: list[int] = [1],
     equal_weight_perc_compounds_as_tasks: bool = False,
     max_iterations: int = 10000,
     tolerance: float = 1e-6,
     learning_rate: float = 0.01,
     verbose: bool = False,
+    seed: int = 0,
 ) -> list:
     """
     Drop-in replacement for _balance_data_from_tasks_vs_clusters_array.
@@ -398,8 +428,11 @@ def balance_data_from_tasks_vs_clusters_array_jax(
     - No max_N_threads (JAX handles parallelization automatically)
     - Added learning_rate for gradient descent control
     - Added tolerance for convergence detection
+    - Added seed for reproducibility (makes algorithm fully deterministic)
 
     Returns the same format: list of subset assignments (1-indexed).
+
+    Fully deterministic given the same seed.
     """
     return balance_data_jax(
         tasks_vs_clusters_array=tasks_vs_clusters_array,
@@ -409,4 +442,5 @@ def balance_data_from_tasks_vs_clusters_array_jax(
         tolerance=tolerance,
         learning_rate=learning_rate,
         verbose=verbose,
+        seed=seed,
     )
