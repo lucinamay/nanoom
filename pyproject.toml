@@ -23,7 +23,11 @@ chem = [
 dev = [
     "nanoom[chem]",
     "nanoom[cuda13]",
+    "pytest>=9.0.2",
     "ruff>=0.14.14",
+]
+tutorial = [
+    "marimo>=0.19.7",
 ]
 
 
