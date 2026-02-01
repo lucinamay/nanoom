@@ -7,13 +7,11 @@ import logging as lg
 import os
 from typing import Literal, Sequence
 
-import jax.numpy as jnp
 import numpy as np
 import polars as pl
 import polars.selectors as cs
 import pulp  # https://coin-or.github.io/pulp/ for docs
 from numpy.typing import NDArray
-from scipy.io.matlab.tests.test_mio import A
 from sklearn.model_selection import StratifiedGroupKFold
 
 
@@ -368,3 +366,37 @@ def sklearn_split(
     ):
         split_idx[test_idx, k] = 1
     return split_idx
+
+
+def split(
+    # X, y, group_on, n_splits, method: Literal["tricario", "sklearn"]
+    df,
+    X_col: str,
+    y_cols: Sequence[str] | str,
+    cluster_col: str,
+    n_splits: int,
+    method: Literal["tricario", "sklearn"],
+    *args,
+    **kwargs,
+) -> np.ndarray:
+    match method:
+        case "tricario":
+            return globally_balanced_split_polars(
+                df=df,
+                split_sizes=[1 / n_splits] * n_splits,
+                x_col=X_col,
+                y_cols=y_cols,
+                cluster_col=cluster_col,
+                alias="split",
+                **kwargs,
+            )
+        case "sklearn":
+            lg.warning("Not tested yet!")
+            return sklearn_split(
+                X=df.select(X_col).to_numpy(),
+                y=df.select(y_cols).to_numpy(),
+                group_on=df.select(cluster_col).to_numpy().squeeze(),
+                n_splits=n_splits,
+                **kwargs,
+            )
+    raise NotImplementedError("general split function not yet implemented")
