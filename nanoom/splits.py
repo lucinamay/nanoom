@@ -3,47 +3,48 @@ balancing, splitting
 
 """
 
-import json
 import logging as lg
 import os
-from datetime import datetime
-from typing import Sequence
+from typing import Literal, Sequence
 
 import jax.numpy as jnp
+import numpy as np
 import polars as pl
+import polars.selectors as cs
 import pulp  # https://coin-or.github.io/pulp/ for docs
 from jax.typing import ArrayLike
+from numpy.typing import NDArray
+from parso.python.tree import WithStmt
+from scipy.io.matlab.tests.test_mio import A
 from sklearn.model_selection import StratifiedGroupKFold
 
-# === balancing ===
+
+def _task_type(series=pl.Series) -> Literal["regression", "classification_onehot"]:
+    # if float-numerical:
+    if series.dtype.is_float():  # ty: ignore
+        return "regression"
+    elif series.dtype.is_int() and set(series.to_list()).difference({0, 1}) == set():  # ty: ignore
+        return "classification_onehot"
+    else:
+        raise NotImplementedError("Other types not yet implemented")
 
 
-def __ensure_base0(clusters: Sequence[int]) -> Sequence[int]:
-    while 0 not in clusters:  # ensure cluster numbers are base 0
-        clusters = list(jnp.array(clusters) - 1)
-    return clusters
-
-
-def _datapoints_vs_tasks_array(
-    df: pl.DataFrame, datapoint_id_col: str, task_name_col: str, task_val_col: str
+def _task_vs_clusters_df(
+    df: pl.DataFrame,
+    x_col: str = "activity_id",
+    task_cols: str | Sequence[str] = ["pchembl_value_mean"],
+    cluster_col: str = "cluster",
+    n_bins_for_regression: int | None = 5,
 ) -> pl.DataFrame:
-    return df.group_by(datapoint_id_col).agg(
-        pl.struct([task_name_col, task_val_col]).alias("tasks")
-    )
-
-
-def tasks_vs_clusters_array_polars(
-    df: pl.DataFrame, task_cols: str, cluster_col: str
-) -> pl.DataFrame | jnp.ndarray:
     """
     Create a cross-tabulation 2D numpy array counting the # data points per task, per cluster
 
     Args:
-        df (pl.DataFrame): dataframe with task columns and cluster column
-        task_cols (str): name of the column containing tasks
-        cluster_col (str): name of the column containing clusters
+        df (pl.DataFrame): input dataframe
+        task_cols (Sequence[str]): columns representing tasks. should be a single column
+        cluster_col (str): column representing clusters
     Returns:
-        pl.DataFrame.to_numpy(): 2D array of shape (num_tasks+1, num_clusters)
+        np.ndarray: 2D array of shape (num_tasks+1, num_clusters)
 
     Comment:
         In the returned array
@@ -55,8 +56,323 @@ def tasks_vs_clusters_array_polars(
 
     """
     # @TODO: figure out how to do it nice and polars-y
+    task_cols = list(task_cols)
+    df = df.lazy().select([x_col, cluster_col] + task_cols).collect()
+    types = set(
+        (
+            _task_type(df.select(col).lazy().collect().get_column(col))
+            for col in task_cols
+        )
+    )
+    if len(types) > 1:
+        raise NotImplementedError("No support for multiple types of tasks (yet?)")
+    type = list(types)[0]
+    match type:
+        case "regression":
+            if not n_bins_for_regression:
+                lg.warning(
+                    "`n_bins_for_regression` == None,but is regression task: using 5 bins"
+                )
+                n_bins_for_regression = 5
+            df = df.with_columns(
+                pl.col(col)
+                .qcut(5, labels=[f"bin_{i}" for i in range(5)])
+                .alias(f"{col}_binned")
+                for col in task_cols
+            ).drop(task_cols)
+            to_pivot_on = cs.ends_with("_binned")
+        case "classification_onehot":
+            df = (
+                df.unpivot(
+                    on=task_cols,
+                    index=x_col,
+                    variable_name="class",
+                    value_name="value",
+                )
+                .drop("value")
+                .cast({"class": pl.Categorical})
+            )
+            to_pivot_on = "class"
 
-    raise NotImplementedError
+    # now that the task is one long-column of possibilities, we pivot it to the
+    # format required for the split-balancing script of Tricario et al.
+    return (
+        df.pivot(
+            on=to_pivot_on,
+            index=cluster_col,
+            values=x_col,
+            aggregate_function="len",
+            sort_columns=True,
+        )
+        .join(
+            df.group_by(cluster_col).agg(pl.len().alias("number")),
+            on=cluster_col,
+            how="left",
+        )
+        .sort(cluster_col)
+        .select(
+            # ensure the order is cluster first,
+            pl.col(cluster_col),
+            # then the number of datapoints per cluster,
+            pl.col("number"),
+            # then tasks
+            pl.exclude("number", cluster_col),
+        )
+    )
+
+
+def _balance_splits_from_tasks_vs_clusters_array(
+    tasks_vs_clusters_array: np.ndarray,
+    split_sizes: list[float] = [0.2, 0.2, 0.2, 0.2, 0.2],
+    equal_weight_perc_compounds_as_tasks: bool = False,
+    relative_gap: int = 0,
+    time_limit_seconds: float = 60 * 60,
+    n_jobs: int = int((os.cpu_count() or 1) // 1.2) + 1,
+    verbose: bool = False,
+) -> np.ndarray:
+    """
+    Linear programming function needed to balance the data while merging clusters
+    taken from https://doi.org/10.26434/chemrxiv-2022-m8l33-v3
+
+    Args:
+        tasks_vs_clusters_array : 2D np.array
+            - the cross-tabulation of the number of data points per cluster, per task.
+            - columns represent unique clusters.
+            - rows represent tasks, except the first row, which represents the number of records (or compounds).
+            - Optionally, instead of the number of data points, the provided array may contain the *percentages*
+                of data points _for the task across all clusters_ (i.e. each *row*, NOT column, may sum to 1).
+            IMPORTANT: make sure the array has 2 dimensions, even if only balancing the number of data records,
+                so there is only 1 row. This can be achieved by setting ndmin = 2 in the np.array function.
+        split_sizes : list
+            - list of the desired final sizes (will be normalised to fractions internally).
+        equal_weight_perc_compounds_as_tasks : bool
+            - if True, matching the % records will have the same weight as matching the % data of individual tasks.
+            - if False, matching the % records will have a weight X times larger than the X tasks.
+        relative_gap : float
+            - the relative gap between the absolute optimal objective and the current one at which the solver
+            stops and returns a solution. Can be very useful for cases where the exact solution requires
+            far too long to be found to be of any practical use.
+            - set to 0 to obtain the absolute optimal solution (if reached within the time_limit_seconds)
+        time_limit_seconds : int
+            - the time limit in seconds for the solver (by default set to 1 hour)
+            - after this time, whatever solution is available is returned
+        n_jobs : int
+            - the maximal number of threads to be used by the solver.
+            - it is advisable to set this number as high as allowed by the available resources.
+
+    Returns:
+        List (of length equal to the number of columns of tasks_vs_clusters_array) of final cluster identifiers
+            (integers, numbered from 0 to len(sizes)), mapping each unique initial cluster to its final cluster.
+
+        - Example: if split_sizes == [20, 10, 70], the output will be a list like [2, 2, 0, 1, 0, 2...], where
+        '0' represents the final cluster of relative size 20, '1' the one of relative size 10, and '2' the
+        one of relative size 70.
+
+
+    Note: from https://doi.org/10.26434/chemrxiv-2022-m8l33-v3, original code can be found at
+    https://chemrxiv.org/engage/api-gateway/chemrxiv/assets/orp/resource/item/660581be9138d231618d604c/original/balance-data-from-tasks-vs-clusters-array-pulp-py.py
+    """
+    # Calculate the fractions from sizes
+
+    fractional_sizes = split_sizes / np.sum(split_sizes)
+    S = len(split_sizes)
+
+    # Normalise the data matrix
+    tasks_vs_clusters_array = tasks_vs_clusters_array / tasks_vs_clusters_array.sum(
+        axis=1, keepdims=True
+    )
+
+    # Find the number of tasks + compounds (M) and the number of initial clusters (N)
+    M, N = tasks_vs_clusters_array.shape
+    if S > N:
+        errormessage = (
+            "The requested number of new clusters to make ("
+            + str(S)
+            + ") cannot be larger than the initial number of clusters ("
+            + str(N)
+            + "). Please review."
+        )
+        raise ValueError(errormessage)
+
+    if relative_gap < 0:
+        errormessage = f"relative gap should be 0 or positive, is {relative_gap}"
+        raise ValueError(errormessage)
+
+    # Given matrix A (M x N) of fraction of data per cluster, assign each cluster to one of S final ML subsets,
+    # so that the fraction of data per ML subset is closest to the corresponding fraction_size.
+    # The weights on each ML subset (WML, S x 1) are calculated from fractional_sizes harmonic-mean-like.
+    # The weights on each task (WT, M x 1) are calculated as requested by the user.
+    # In the end: argmin SUM(ABS((A.X-T).WML).WT)
+    # where X is the (N x S) binary solution matrix
+    # where T is the (M x S) matrix of target fraction sizes (repeat of fractional_sizes)
+    # constraint: assign one cluster to one and only one final ML subset
+    # i.e. each row of X must sum to 1
+
+    A = np.copy(tasks_vs_clusters_array)
+
+    # Create WT = obj_weights
+    if (M > 1) & (not equal_weight_perc_compounds_as_tasks):
+        obj_weights = np.array([M - 1] + [1] * (M - 1))
+    else:
+        obj_weights = np.array([1] * M)
+
+    obj_weights = obj_weights / np.sum(obj_weights)
+
+    # Create WML
+    sk_harmonic = (1 / fractional_sizes) / np.sum(1 / fractional_sizes)
+
+    # Create the pulp model
+    prob = pulp.LpProblem("Data_balancing", pulp.LpMinimize)
+
+    # Create the pulp variables
+    # x_names represent clusters, ML_subsets, and are binary variables
+    x_names = ["x_" + str(i) for i in range(N * S)]
+    x = [
+        pulp.LpVariable(x_names[i], lowBound=0, upBound=1, cat="Integer")
+        for i in range(N * S)
+    ]
+    # X_names represent tasks, ML_subsets, and are continuous positive variables
+    X_names = ["X_" + str(i) for i in range(M * S)]
+    X = [
+        pulp.LpVariable(X_names[i], lowBound=0, cat="Continuous") for i in range(M * S)
+    ]
+
+    # Add the objective to the model
+
+    obj = []
+    coeff = []
+    for m in range(S):
+        for t in range(M):
+            obj.append(X[m * M + t])
+            coeff.append(sk_harmonic[m] * obj_weights[t])
+
+    prob += pulp.LpAffineExpression([(obj[i], coeff[i]) for i in range(len(obj))])
+
+    # Add the constraints to the model
+
+    # Constraints forcing each cluster to be in one and only one ML_subset
+    for c in range(N):
+        prob += pulp.LpAffineExpression([(x[c + m * N], +1) for m in range(S)]) == 1
+
+    # Constraints forcing each ML_subset to be non-empty
+    for m in range(S):
+        prob += (
+            pulp.LpAffineExpression([(x[i], +1) for i in range(m * N, (m + 1) * N)])
+            >= 1
+        )
+
+    # Constraints related to the ABS values handling, part 1 and 2
+    for m in range(S):
+        for t in range(M):
+            cs = [c for c in range(N) if A[t, c] != 0]
+            prob += (
+                pulp.LpAffineExpression([(x[c + m * N], A[t, c]) for c in cs])
+                - X[m * M + t]
+                <= fractional_sizes[m]
+            )
+            prob += (
+                pulp.LpAffineExpression([(x[c + m * N], A[t, c]) for c in cs])
+                + X[m * M + t]
+                >= fractional_sizes[m]
+            )
+
+    # Solve the model
+    prob.solve(
+        pulp.PULP_CBC_CMD(
+            gapRel=relative_gap,
+            timeLimit=time_limit_seconds,
+            threads=n_jobs,
+            msg=verbose,
+        )
+    )
+
+    # Extract the solution
+
+    list_binary_solution = [pulp.value(x[i]) for i in range(N * S)]
+    list_initial_cluster_indices = [
+        (list(range(N)) * S)[i] for i, li in enumerate(list_binary_solution) if li == 1
+    ]
+    list_final_ML_subsets = [
+        (list((1 + np.repeat(range(S), N)).astype("int64")))[i]
+        for i, li in enumerate(list_binary_solution)
+        if li == 1
+    ]
+    mapping = np.array(
+        [x for _, x in sorted(zip(list_initial_cluster_indices, list_final_ML_subsets))]
+    )
+
+    return mapping - 1
+
+
+def globally_balanced_split_polars(
+    df: pl.DataFrame,
+    split_sizes: Sequence[float] = [0.2, 0.2, 0.2, 0.2, 0.2],
+    x_col: str = "activity_id",
+    y_cols: str | Sequence[str] = "pchembl_value_mean",
+    cluster_col: str = "cluster",
+    n_bins_for_regression: int | None = 5,
+    alias: str = "split",
+    **kwargs,
+):
+    """splits the data, returning a cluster -> split assignment mapping as a dictionary
+
+    note: inspired by https://github.com/sohviluukkonen/gbmt-splits/blob/main/gbmtsplits/split.py
+    implementation of the tricario et al split
+    """
+    lg.info(
+        "if you want more than 1 split, you might want to change "
+        "the seed of clustering for each run"
+    )
+
+    # rows: clusters, cols: tasks
+    clusters_vs_tasks_df = _task_vs_clusters_df(
+        df=df,
+        x_col=x_col,
+        task_cols=y_cols,
+        cluster_col=cluster_col,
+        n_bins_for_regression=n_bins_for_regression,
+    ).to_numpy()
+
+    # the column that is the explicit cluster numbers
+    clusters = clusters_vs_tasks_df[:, 0]
+
+    # the array that the next code requires, with tasks as rows and clusters as cols
+    task_vs_clusters_array = clusters_vs_tasks_df[:, 1:].T
+
+    split_assignments = _balance_splits_from_tasks_vs_clusters_array(
+        task_vs_clusters_array,
+        split_sizes=list(split_sizes),
+        **kwargs,
+    )
+    mapping = pl.DataFrame(
+        [
+            pl.Series(name=cluster_col, values=clusters),
+            pl.Series(name=alias, values=split_assignments),
+        ]
+    )
+    return df.lazy().join(mapping.lazy(), on=cluster_col, how="left").collect()
+
+
+def sklearn_split(
+    X: NDArray, y: NDArray, group_on: NDArray, random_state: int, n_splits: int = 5
+) -> np.ndarray:
+    """returns jnp.ndarray of shape group_on.shape[0], n_splits"""
+    splitter = StratifiedGroupKFold(
+        n_splits=n_splits, shuffle=True, random_state=random_state
+    )
+    split_idx = np.zeros((X.shape[0], n_splits))
+    for k, (train_idx, test_idx) in enumerate(
+        splitter.split(
+            X=X,
+            y=y,
+            groups=group_on,
+        )
+    ):
+        split_idx[test_idx, k] = 1
+    return split_idx
+
+
+# ========================== jax implementations ==============================
 
 
 def _task_vs_clusters_array_jax(
@@ -94,9 +410,9 @@ def _task_vs_clusters_array_jax(
     return task_vs_clusters
 
 
-def _balance_data_from_tasks_vs_clusters_array(
+def _balance_data_from_tasks_vs_clusters_array_jax(
     tasks_vs_clusters_array: jnp.ndarray,
-    sizes: list[int] = [1],
+    sizes: list[float] = [0.4, 0.4, 0.2],
     equal_weight_perc_compounds_as_tasks: bool = False,
     relative_gap: int = 0,
     time_limit_seconds: float = 60 * 60,
@@ -146,9 +462,11 @@ def _balance_data_from_tasks_vs_clusters_array(
     https://chemrxiv.org/engage/api-gateway/chemrxiv/assets/orp/resource/item/660581be9138d231618d604c/original/balance-data-from-tasks-vs-clusters-array-pulp-py.py
     """
     # Calculate the fractions from sizes
+    raise NotImplementedError
 
-    fractional_sizes = sizes / jnp.sum(sizes)
-    S = len(sizes)
+    sizes_ = jnp.array(sizes)
+    fractional_sizes = sizes_ / jnp.sum(sizes_)
+    S = sizes_.shape[0]
 
     # Normalise the data matrix
     tasks_vs_clusters_array = tasks_vs_clusters_array / tasks_vs_clusters_array.sum(
@@ -277,127 +595,187 @@ def _balance_data_from_tasks_vs_clusters_array(
     return mapping
 
 
-def balanced_split(
-    data: pl.DataFrame,
-    clusters: Sequence[int],
-    to_split: str = "molecule",
-):
-    """Balanced splitting of data based on clusters and tasks
+# ========================= legacy implementations ==============================
+
+
+def _balance_data_from_tasks_vs_clusters_array_legacy(
+    tasks_vs_clusters_array: np.ndarray,
+    sizes: list[float] = [0.4, 0.4, 0.3],
+    equal_weight_perc_compounds_as_tasks: bool = False,
+    relative_gap: int = 0,
+    time_limit_seconds: float = 60 * 60,
+    max_N_threads: int = int((os.cpu_count() or 1) // 1.2) + 1,
+    verbose: bool = False,
+) -> list:
+    """
+    Linear programming function needed to balance the data while merging clusters
+    taken from https://doi.org/10.26434/chemrxiv-2022-m8l33-v3
 
     Args:
-        data (pl.DataFrame): input data, with structure/sequence information on the to_split choice
-        to_split (str): what to split. Either "molecule" or "protein". Default is "molecule".
+        tasks_vs_clusters_array : 2D np.array
+            - the cross-tabulation of the number of data points per cluster, per task.
+            - columns represent unique clusters.
+            - rows represent tasks, except the first row, which represents the number of records (or compounds).
+            - Optionally, instead of the number of data points, the provided array may contain the *percentages*
+                of data points _for the task across all clusters_ (i.e. each *row*, NOT column, may sum to 1).
+            IMPORTANT: make sure the array has 2 dimensions, even if only balancing the number of data records,
+                so there is only 1 row. This can be achieved by setting ndmin = 2 in the np.array function.
+        sizes : list
+            - list of the desired final sizes (will be normalised to fractions internally).
+        equal_weight_perc_compounds_as_tasks : bool
+            - if True, matching the % records will have the same weight as matching the % data of individual tasks.
+            - if False, matching the % records will have a weight X times larger than the X tasks.
+        relative_gap : float
+            - the relative gap between the absolute optimal objective and the current one at which the solver
+            stops and returns a solution. Can be very useful for cases where the exact solution requires
+            far too long to be found to be of any practical use.
+            - set to 0 to obtain the absolute optimal solution (if reached within the time_limit_seconds)
+        time_limit_seconds : int
+            - the time limit in seconds for the solver (by default set to 1 hour)
+            - after this time, whatever solution is available is returned
+        max_N_threads : int
+            - the maximal number of threads to be used by the solver.
+            - it is advisable to set this number as high as allowed by the available resources.
 
     Returns:
-        dict: mapping of split names to lists of data point identifiers
+        List (of length equal to the number of columns of tasks_vs_clusters_array) of final cluster identifiers
+            (integers, numbered from 1 to len(sizes)), mapping each unique initial cluster to its final cluster.
+
+        - Example: if sizes == [20, 10, 70], the output will be a list like [3, 3, 1, 2, 1, 3...], where
+        '1' represents the final cluster of relative size 20, '2' the one of relative size 10, and '3' the
+        one of relative size 70.
+
+
+    Note: from https://doi.org/10.26434/chemrxiv-2022-m8l33-v3, original code can be found at
+    https://chemrxiv.org/engage/api-gateway/chemrxiv/assets/orp/resource/item/660581be9138d231618d604c/original/balance-data-from-tasks-vs-clusters-array-pulp-py.py
     """
-    match to_split:
-        case "molecule":
-            lg.info("grouping by cid and aggregating unique `target_id`s as tasks")
-            datapoint_tasks = data.group_by("cid").agg(
-                pl.col("target_id")
-                .unique()
-                .alias("tasks")  # @TODO: check if we should double-count double targets
-            )
-            ids: list[str] = datapoint_tasks["cid"].to_list()
-            tasks: list[list[str]] = datapoint_tasks["tasks"].to_list()
-            datapoints = Compounds().retrieve(
-                ids=ids, with_mols=True, originals=True, source="papyrus"
-            )
-            # clusters = clustering_mols(
-            #     datapoints["mol"].to_list(),
-            #     clustering_sphere_exclusion_rdkit,
-            # )
+    # Calculate the fractions from sizes
 
-        # case "protein":
-        #     lg.info("grouping by tid and aggregating unique `cid`s as tasks")
-        #     datapoint_tasks = data.group_by("tid").agg(
-        #         pl.col("cid")
-        #         .unique()
-        #         .alias("tasks")  # @TODO: check if we should double-count double targets
-        #     )
-        #     ids: list[str] = datapoint_tasks["tid"].to_list()
-        #     tasks: list[list[str]] = datapoint_tasks["tasks"].to_list()
-        #     datapoints = Proteins().retrieve("papyrus", original_ids=ids)
-        #     clusters = prot_clustering(
-        #         datapoints["sequence"].to_list(),
-        #         sphere_exclusion_clustering,
-        #         batch_descriptor=batch_esm,
-        #     )
-        #     pass
-        case "molecule_protein":
-            raise NotImplementedError
-        case _:
-            raise ValueError(f"Unknown datapoint type: {to_split}")
+    fractional_sizes = sizes / np.sum(sizes)
+    S = len(sizes)
 
-    tasks_vs_clusters = _task_vs_clusters_array(tasks, list(clusters))
-    mappings: jnp.ndarray = jnp.array(
-        _balance_data_from_tasks_vs_clusters_array(tasks_vs_clusters, sizes=[80, 20])
+    # Normalise the data matrix
+    tasks_vs_clusters_array = tasks_vs_clusters_array / tasks_vs_clusters_array.sum(
+        axis=1, keepdims=True
     )
-    # @TODO: check if 6x 20 would be better
-    jnp.save(TMP.base / f"{to_split}_split", mappings)
-    return mappings
 
-
-# ============== based on gbmt-split ==============
-
-
-def _regression_binning(n_bins: int = 5):
-    raise NotImplementedError
-
-
-def globally_balanced_split(
-    clusters: jnp.ndarray[int], tasks: jnp.ndarray, alias: str | None = None
-):
-    """adapted from https://github.com/sohviluukkonen/gbmt-splits/blob/main/gbmtsplits/split.py"""
-    lg.warning(
-        "if you want more than 1 split, you might want to change the seed of clustering"
-    )
-    tasks_vs_clusters_array = _tasks_vs_clusters_array()
-
-
-def _sklearn_split(X, y, group_on, random_state: int, n_splits: int = 5) -> jnp.ndarray:
-    """returns jnp.ndarray of shape group_on.shape[0], n_splits"""
-    splitter = StratifiedGroupKFold(
-        n_splits=n_splits, shuffle=True, random_state=random_state
-    )
-    split_idx = jnp.zeros((X.shape[0], n_splits))
-    for k, (train_idx, test_idx) in enumerate(
-        splitter.split(
-            X=X,
-            y=y,
-            groups=group_on,
+    # Find the number of tasks + compounds (M) and the number of initial clusters (N)
+    M, N = tasks_vs_clusters_array.shape
+    if S > N:
+        errormessage = (
+            "The requested number of new clusters to make ("
+            + str(S)
+            + ") cannot be larger than the initial number of clusters ("
+            + str(N)
+            + "). Please review."
         )
-    ):
-        split_idx[test_idx, k] = 1
-    return split_idx
+        raise ValueError(errormessage)
 
+    if relative_gap < 0:
+        errormessage = f"relative gap should be 0 or positive, is {relative_gap}"
+        raise ValueError(errormessage)
 
-def split(
-    clusters,
-    tasks,
-    type: Literal["regression", "classification"] = "regression",
-    method: str = "sklearn",
-    k_folds: int = 5,
-    random_seed: int = 0,
-) -> jnp.ndarray():
-    jnp.random.seed(random_seed)
-    match method:
-        case "sklearn":
-            _sklearn_split()
-    pass
+    # Given matrix A (M x N) of fraction of data per cluster, assign each cluster to one of S final ML subsets,
+    # so that the fraction of data per ML subset is closest to the corresponding fraction_size.
+    # The weights on each ML subset (WML, S x 1) are calculated from fractional_sizes harmonic-mean-like.
+    # The weights on each task (WT, M x 1) are calculated as requested by the user.
+    # In the end: argmin SUM(ABS((A.X-T).WML).WT)
+    # where X is the (N x S) binary solution matrix
+    # where T is the (M x S) matrix of target fraction sizes (repeat of fractional_sizes)
+    # constraint: assign one cluster to one and only one final ML subset
+    # i.e. each row of X must sum to 1
 
+    A = np.copy(tasks_vs_clusters_array)
 
-# ========================================================
+    # Create WT = obj_weights
+    if (M > 1) & (not equal_weight_perc_compounds_as_tasks):
+        obj_weights = np.array([M - 1] + [1] * (M - 1))
+    else:
+        obj_weights = np.array([1] * M)
 
+    obj_weights = obj_weights / np.sum(obj_weights)
 
-# def main():
-#     configure_pystow_logging(logname="splitting", level="debug")
-#     data = pl.read_parquet(CLEANDATA.join("papyrus") / "drug.parquet")[:10]
-#     mappings = balanced_split(data, to_split="molecule")
-#     print(mappings)
+    # Create WML
+    sk_harmonic = (1 / fractional_sizes) / np.sum(1 / fractional_sizes)
 
+    # Create the pulp model
+    prob = pulp.LpProblem("Data_balancing", pulp.LpMinimize)
 
-# if __name__ == "__main__":
-#     main()
-#     # print("Hello world")
+    # Create the pulp variables
+    # x_names represent clusters, ML_subsets, and are binary variables
+    x_names = ["x_" + str(i) for i in range(N * S)]
+    x = [
+        pulp.LpVariable(x_names[i], lowBound=0, upBound=1, cat="Integer")
+        for i in range(N * S)
+    ]
+    # X_names represent tasks, ML_subsets, and are continuous positive variables
+    X_names = ["X_" + str(i) for i in range(M * S)]
+    X = [
+        pulp.LpVariable(X_names[i], lowBound=0, cat="Continuous") for i in range(M * S)
+    ]
+
+    # Add the objective to the model
+
+    obj = []
+    coeff = []
+    for m in range(S):
+        for t in range(M):
+            obj.append(X[m * M + t])
+            coeff.append(sk_harmonic[m] * obj_weights[t])
+
+    prob += pulp.LpAffineExpression([(obj[i], coeff[i]) for i in range(len(obj))])
+
+    # Add the constraints to the model
+
+    # Constraints forcing each cluster to be in one and only one ML_subset
+    for c in range(N):
+        prob += pulp.LpAffineExpression([(x[c + m * N], +1) for m in range(S)]) == 1
+
+    # Constraints forcing each ML_subset to be non-empty
+    for m in range(S):
+        prob += (
+            pulp.LpAffineExpression([(x[i], +1) for i in range(m * N, (m + 1) * N)])
+            >= 1
+        )
+
+    # Constraints related to the ABS values handling, part 1 and 2
+    for m in range(S):
+        for t in range(M):
+            cs = [c for c in range(N) if A[t, c] != 0]
+            prob += (
+                pulp.LpAffineExpression([(x[c + m * N], A[t, c]) for c in cs])
+                - X[m * M + t]
+                <= fractional_sizes[m]
+            )
+            prob += (
+                pulp.LpAffineExpression([(x[c + m * N], A[t, c]) for c in cs])
+                + X[m * M + t]
+                >= fractional_sizes[m]
+            )
+
+    # Solve the model
+    prob.solve(
+        pulp.PULP_CBC_CMD(
+            gapRel=relative_gap,
+            timeLimit=time_limit_seconds,
+            threads=max_N_threads,
+            msg=verbose,
+        )
+    )
+
+    # Extract the solution
+
+    list_binary_solution = [pulp.value(x[i]) for i in range(N * S)]
+    list_initial_cluster_indices = [
+        (list(range(N)) * S)[i] for i, li in enumerate(list_binary_solution) if li == 1
+    ]
+    list_final_ML_subsets = [
+        (list((1 + np.repeat(range(S), N)).astype("int64")))[i]
+        for i, li in enumerate(list_binary_solution)
+        if li == 1
+    ]
+    mapping = [
+        x for _, x in sorted(zip(list_initial_cluster_indices, list_final_ML_subsets))
+    ]
+
+    return mapping
