@@ -103,13 +103,18 @@ def _(pcm_data, pl):
         pcm_data.with_columns(
             y_binned=pl.col("y").qcut(5, labels=[f"bin_{i}" for i in range(5)])
         )
-        .pivot(
-            index="datapoint", on="y_binned", values="y", aggregate_function="len"
-        )
-        .cast({pl.UInt32: pl.Boolean})  # boolean for visualisation
     )
     binned_pcm
     return (binned_pcm,)
+
+
+@app.cell
+def _(binned_pcm, pl):
+    # visual check
+    binned_pcm.pivot(
+            index="datapoint", on="y_binned", values="y", aggregate_function="len"
+        ).cast({pl.UInt32: pl.Boolean})  # boolean for visualisation
+    return
 
 
 @app.cell(hide_code=True)
@@ -253,37 +258,7 @@ def _(binned_pcm_cluster, pl):
             This is the format requrired by the balancing algorithm
         """
         # Get unique clusters sorted for column order
-        clusters_sorted = df[cluster_col].unique().sort().to_list()
-        num_clusters = len(clusters_sorted)
-
-        # First row: total number of objects per cluster
-        total_per_cluster = (
-            df.group_by(cluster_col)
-            .count()
-            .select(cluster_col, "count")
-            .sort(cluster_col)
-            .get_column("count")
-            .to_list()
-        )
-
-        # For each task, count non-nulls per cluster
-        task_rows = []
-        for task in task_cols:
-            counts = (
-                df.group_by(cluster_col)
-                .agg(pl.col(task).is_not_null().sum().alias("count"))
-                .sort(cluster_col)
-                .get_column("count")
-                .to_list()
-            )
-            task_rows.append(counts)
-
-        # Stack: first row is total, then each task
-        result = pl.DataFrame(
-            [total_per_cluster] + task_rows,
-            schema=[str(c) for c in clusters_sorted],
-        )
-        return result.to_numpy()
+        pass
 
 
     tasks_vs_clusters_array_polars(
@@ -291,6 +266,38 @@ def _(binned_pcm_cluster, pl):
         task_cols=[f"bin_{i}" for i in range(5)],
         cluster_col="cluster",
     )
+    pre_transpose = binned_pcm_cluster.pivot(on="y_binned",index="cluster", values="datapoint",aggregate_function="len",sort_columns=True).join(binned_pcm_cluster.group_by("cluster").agg(pl.len().alias("number")), on="cluster",how="left").sort("cluster").select(pl.col("cluster"),pl.col("number"),pl.exclude("number", "cluster"))
+    pre_transpose
+    return (pre_transpose,)
+
+
+@app.cell
+def _(pre_transpose):
+    # from nanoom.splits import _balance_data_from_tasks_vs_clusters_array
+    import jax.numpy as jnp
+    arr = jnp.array(pre_transpose.to_numpy())
+    column_vals = arr[:,0]
+    pass_to_opt = arr[:,1:]
+    pass_to_opt.T #-> this is what we pass to the function
+    return (pass_to_opt,)
+
+
+@app.cell
+def _():
+    from nanoom.splits import _balance_data_from_tasks_vs_clusters_array
+    return
+
+
+@app.cell
+def _(pass_to_opt):
+    input = pass_to_opt.T
+    input
+    return (input,)
+
+
+@app.cell
+def _(input):
+    _balance_data_from_tasks_vs_clusters_array(input,time_limit_seconds=20)
     return
 
 
