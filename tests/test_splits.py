@@ -1,5 +1,4 @@
 import polars as pl
-import pytest
 
 
 class TestSplitting:
