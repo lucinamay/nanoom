@@ -8,25 +8,41 @@ from sklearn.cluster import DBSCAN, HDBSCAN, KMeans
 from sklearn.metrics import silhouette_score as sk_silhouette
 
 
-def _auto_n_clusters(X: Sequence) -> int:
-    return len(X) // 10 + 1
+def _auto_n_clusters(descriptors: np.ndarray) -> int:
+    return len(descriptors) // 10 + 1
 
 
 def random_clustering(
-    X: Sequence, n_clusters: int | None = None, seed: int = 0
+    descriptors: np.ndarray, n_clusters: int | None = None, seed: int = 0
 ) -> np.ndarray:
-    n_clusters = n_clusters if n_clusters is not None else _auto_n_clusters(X)
-    return np.ndarray(np.random.RandomState(seed=seed).permutation(len(X))) % n_clusters
+    n_clusters = n_clusters if n_clusters is not None else _auto_n_clusters(descriptors)
+    return (
+        np.ndarray(np.random.RandomState(seed=seed).permutation(len(descriptors)))
+        % n_clusters
+    )
 
 
-def dummy_hash_clustering(X: Sequence, n_clusters: int | None = None) -> np.ndarray:
-    n_clusters = n_clusters if n_clusters is not None else _auto_n_clusters(X)
-    return np.ndarray(X) % n_clusters
+def dummy_hash_clustering(
+    descriptors: np.ndarray, n_clusters: int | None = None
+) -> np.ndarray:
+    n_clusters = n_clusters if n_clusters is not None else _auto_n_clusters(descriptors)
+    return np.ndarray(descriptors) % n_clusters
 
 
 def cluster(
     descriptors: np.ndarray,
-    method: Literal["kmeans", "dbscan", "hdbscan", "sphere_exclusion", "bitbirch"],
+    method: Literal[
+        "kmeans",
+        "kmeans_10pct",
+        "dbscan",
+        "hdbscan",
+        "sphere_exclusion",
+        "bitbirch",
+        "maxmin",
+        "leader_picker",
+        "hash_dummy",
+        "random",
+    ],
     *args,
     **kwargs,
 ) -> np.ndarray:
@@ -75,6 +91,14 @@ def cluster(
             from nanoom.chem import _bitbirch
 
             return _bitbirch(descriptors, *args, **kwargs)
+        case "maxmin":
+            from nanoom.chem import maxmin_clustering
+
+            return maxmin_clustering(descriptors, *args, **kwargs)
+        case "leader_picker":
+            from nanoom.chem import leader_picker_clustering
+
+            return leader_picker_clustering(descriptors, *args, **kwargs)
         case "hash_dummy":
             return dummy_hash_clustering(descriptors, *args, **kwargs)
         case "random":

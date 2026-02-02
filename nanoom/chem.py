@@ -12,66 +12,13 @@ from rdkit.Chem.Scaffolds import MurckoScaffold
 from rdkit.DataStructs import ExplicitBitVect
 from rdkit.SimDivFilters import rdSimDivPickers
 from rich.progress import track
-
-
-def _auto_n_clusters(X: Sequence) -> int:
-    return len(X) // 10 + 1
-
-
-def _smiles_to_murcko_scaffolds(smiles: Sequence[str]) -> list:
-    """from logic of https://github.com/sohviluukkonen/gbmt-splits/blob/main/gbmtsplits/clustering.py"""
-    return [MurckoScaffold.GetScaffoldForMol(Chem.MolFromSmiles(smi)) for smi in smiles]
-
-
-def _dissimilarity_cluster_assignment(fps: Sequence, centroids: Sequence) -> np.ndarray:
-    """from logic of https://github.com/sohviluukkonen/gbmt-splits/blob/main/gbmtsplits/clustering.py"""
-    clusters = np.empty(len(fps), dtype=int)
-    for i, fp in enumerate(fps):
-        similarities = [
-            DataStructs.FingerprintSimilarity(fp, fps[j]) for j in centroids
-        ]
-        clusters[i] = np.argmax(similarities)
-    return clusters
-
-
-def murcko_scaffold_clustering(X: Sequence) -> np.ndarray:
-    """from logic of https://github.com/sohviluukkonen/gbmt-splits/blob/main/gbmtsplits/clustering.py"""
-    scaffolds = _smiles_to_murcko_scaffolds(X)
-    scaffold_to_cluster = dict(zip(*enumerate(set(scaffolds))))
-    return np.array([scaffold_to_cluster[scaf] for scaf in scaffolds])
-
-
-def maxmin_clustering(
-    X: Sequence, fps: Sequence, n_clusters: int | None = None, seed: int = 0
-) -> np.ndarray:
-    """from logic of https://github.com/sohviluukkonen/gbmt-splits/blob/main/gbmtsplits/clustering.py"""
-    n_clusters = n_clusters if n_clusters is not None else _auto_n_clusters(X)
-    centroids = rdSimDivPickers.MaxMinPicker().LazyBitVectorPick(
-        fps, len(fps), n_clusters, seed=seed
-    )
-    return _dissimilarity_cluster_assignment(fps, centroids)
-
-
-def leader_picker_clustering(
-    X: Sequence, fps: Sequence, similarity_threshold: float = 0.7
-) -> np.ndarray:
-    """from logic of https://github.com/sohviluukkonen/gbmt-splits/blob/main/gbmtsplits/clustering.py"""
-    centroids = rdSimDivPickers.LeaderPicker().LazyBitVectorPick(
-        fps, len(fps), similarity_threshold
-    )
-    return _dissimilarity_cluster_assignment(fps, centroids)
-
-
-def _sphere_exclusion_directed(
-    descriptors: np.ndarray,
-    threshold: float = 0.65,
-):
-    """Based on https://doi.org/10.1021/ci025554v"""
-    # @TODO check if useful
-    raise NotImplementedError
-
+from scipy.sparse import load_npz
 
 # ==================== own implementations ====================
+
+
+def _auto_n_clusters(descriptors: np.ndarray) -> int:
+    return len(descriptors) // 10 + 1
 
 
 def _ndarray_to_bitvects(array: np.ndarray) -> list[DataStructs.ExplicitBitVect]:
@@ -151,3 +98,62 @@ def _bitbirch(descriptors: np.ndarray, **kwargs) -> np.ndarray:
         for idx in indices:
             cluster_labels[idx] = cluster_id
     return np.array(cluster_labels, dtype=int)
+
+
+def _sphere_exclusion_directed(
+    descriptors: np.ndarray,
+    threshold: float = 0.65,
+):
+    """Based on https://doi.org/10.1021/ci025554v"""
+    # @TODO check if useful
+    raise NotImplementedError
+
+
+# ==================== gbmt-splits functions ====================
+
+# murcko does not fit in here as it does not use descriptors but direct mols
+# def _smiles_to_murcko_scaffolds(smiles: Sequence[str]) -> list:
+#     return [MurckoScaffold.GetScaffoldForMol(Chem.MolFromSmiles(smi)) for smi in smiles]
+
+
+# def murcko_scaffold_clustering(descriptors: Sequence) -> np.ndarray:
+#     """from logic of https://github.com/sohviluukkonen/gbmt-splits/blob/main/gbmtsplits/clustering.py"""
+#     scaffolds = _smiles_to_murcko_scaffolds(descriptors)
+#     scaffold_to_cluster = dict(zip(*enumerate(set(scaffolds))))
+#     return np.array([scaffold_to_cluster[scaf] for scaf in scaffolds])
+
+
+def _dissimilarity_cluster_assignment(
+    bitvects: list[DataStructs.ExplicitBitVect], centroids: Sequence
+) -> np.ndarray:
+    """from logic of https://github.com/sohviluukkonen/gbmt-splits/blob/main/gbmtsplits/clustering.py"""
+    clusters = np.empty(len(bitvects), dtype=int)
+    for i, fp in enumerate(bitvects):
+        similarities = [
+            DataStructs.FingerprintSimilarity(fp, bitvects[j]) for j in centroids
+        ]
+        clusters[i] = np.argmax(similarities)
+    return clusters
+
+
+def maxmin_clustering(
+    descriptors: np.ndarray, n_clusters: int | None = None, seed: int = 0
+) -> np.ndarray:
+    """from logic of https://github.com/sohviluukkonen/gbmt-splits/blob/main/gbmtsplits/clustering.py"""
+    n_clusters = n_clusters if n_clusters is not None else _auto_n_clusters(descriptors)
+    bitvects = _ndarray_to_bitvects(descriptors)
+    centroids = rdSimDivPickers.MaxMinPicker().LazyBitVectorPick(
+        bitvects, len(descriptors), n_clusters, seed=seed
+    )
+    return _dissimilarity_cluster_assignment(bitvects, centroids)
+
+
+def leader_picker_clustering(
+    descriptors: np.ndarray, similarity_threshold: float = 0.7
+) -> np.ndarray:
+    """from logic of https://github.com/sohviluukkonen/gbmt-splits/blob/main/gbmtsplits/clustering.py"""
+    bitvects = _ndarray_to_bitvects(descriptors)
+    centroids = rdSimDivPickers.LeaderPicker().LazyBitVectorPick(
+        bitvects, len(descriptors), similarity_threshold
+    )
+    return _dissimilarity_cluster_assignment(bitvects, centroids)
