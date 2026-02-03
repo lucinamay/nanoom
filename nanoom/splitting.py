@@ -309,7 +309,7 @@ def globally_balanced_split_polars(
     n_bins_for_regression: int | None = 5,
     alias: str = "split",
     **kwargs,
-):
+) -> tuple[np.ndarray, np.ndarray]:
     """splits the data, returning a cluster -> split assignment mapping as a dictionary
 
     note: inspired by https://github.com/sohviluukkonen/gbmt-splits/blob/main/gbmtsplits/split.py
@@ -340,18 +340,19 @@ def globally_balanced_split_polars(
         split_sizes=list(split_sizes),
         **kwargs,
     )
-    mapping = pl.DataFrame(
-        [
-            pl.Series(name=cluster_col, values=clusters),
-            pl.Series(name=alias, values=split_assignments),
-        ]
-    )
-    return df.lazy().join(mapping.lazy(), on=cluster_col, how="left").collect()
+    return clusters, split_assignments
+    # mapping = pl.DataFrame(
+    #     [
+    #         pl.Series(name=cluster_col, values=clusters),
+    #         pl.Series(name=alias, values=split_assignments),
+    #     ]
+    # )
+    # return df.lazy().join(mapping.lazy(), on=cluster_col, how="left").collect()
 
 
 def sklearn_split(
     X: NDArray, y: NDArray, group_on: NDArray, random_state: int, n_splits: int = 5
-) -> np.ndarray:
+) -> tuple[np.ndarray, np.ndarray]:
     """returns jnp.ndarray of shape group_on.shape[0], n_splits"""
     splitter = StratifiedGroupKFold(
         n_splits=n_splits, shuffle=True, random_state=random_state
@@ -365,11 +366,16 @@ def sklearn_split(
         )
     ):
         split_idx[test_idx, k] = 1
-    return split_idx
+    # assert only one column per row is 1
+    assert np.all(split_idx.sum(axis=1) == 1), RuntimeError(
+        "Each row should be assigned to only one test split"
+    )
+    # now squish them by assigning np.nan to the 0s, and the column number to the 1s
+    split_idx = np.where(split_idx == 1, np.arange(n_splits), np.nan)
+    return group_on, split_idx
 
 
 def split(
-    # X, y, group_on, n_splits, method: Literal["tricario", "sklearn"]
     df,
     X_col: str,
     y_cols: Sequence[str] | str,
@@ -378,7 +384,22 @@ def split(
     method: Literal["tricario", "sklearn"],
     *args,
     **kwargs,
-) -> np.ndarray:
+) -> tuple[np.ndarray, np.ndarray]:
+    """Takes a regular dataframe with various X-y columns
+    (these do not have to be unique X's) and turns them into
+    a tuple of the original cluster values to test split indices
+    Args:
+        df: polars DataFrame
+        X_col: str, name of the column representing X values (e.g. activity_id)
+        y_cols: Sequence[str] | str, name(s) of the column(s) representing y values (e.g. pchembl_value_mean)
+        cluster_col: str, name of the column representing cluster assignments
+        n_splits: int, number of splits to create
+        method: Literal["tricario", "sklearn"], method to use for splitting
+    Returns:
+        tuple[np.ndarray, np.ndarray]: (clusters, split assignments)
+    0th array is the original cluster values
+    1st array is the split assignments to test (of shape (num_clusters, n_splits
+    """
     match method:
         case "tricario":
             return globally_balanced_split_polars(
