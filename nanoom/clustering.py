@@ -1,7 +1,7 @@
 """clustering logic for various clustering"""
 
 import logging as lg
-from typing import Literal, Sequence
+from typing import Literal
 
 import numpy as np
 from sklearn.cluster import DBSCAN, HDBSCAN, KMeans
@@ -9,7 +9,9 @@ from sklearn.metrics import silhouette_score as sk_silhouette
 
 
 def _auto_n_clusters(descriptors: np.ndarray) -> int:
-    return len(descriptors) // 10 + 1
+    n_clusters = len(descriptors) // 10 + 1
+    lg.info(f"Auto setting n_clusters to {n_clusters}")
+    return n_clusters
 
 
 def random_clustering(
@@ -56,27 +58,25 @@ def cluster(
     Returns:
         np.ndarray: array of cluster indices per descriptor
 
-    Notes on the methods:
-        _kmeans_
+    Notes:
+        - If `n_clusters` is provided as a float between 0 and 1, it is interpreted
+          as the fraction of the dataset size to use as the number of clusters (plus 1).
     """
     # if descriptors are square matrix, assume its a distance matrix and convert to condensed form
     if len(descriptors.shape) == 2 and descriptors.shape[0] == descriptors.shape[1]:
         raise NotImplementedError(
             "Clustering from distance matrix not implemented yet."
         )
+    n_clusters = kwargs.get("n_clusters", None)
+    if n_clusters and n_clusters < 1 and n_clusters > 0:
+        kwargs["n_clusters"] = descriptors.shape[0] // (1 / n_clusters) + 1
+        lg.info(
+            f"Interpreting n_clusters={n_clusters} as fraction, setting n_clusters to {kwargs['n_clusters']}"
+        )
 
     match method:
         case "kmeans":
             return KMeans(*args, **kwargs).fit(descriptors).labels_
-        case "kmeans_10pct":
-            assert "n_clusters" not in kwargs, (
-                "n_clusters should not be provided for kmeans_10pct"
-            )
-            return (
-                KMeans(n_clusters=(descriptors.shape[0] // 10 + 1), *args, **kwargs)
-                .fit(descriptors)
-                .labels_
-            )
         case "dbscan":
             if kwargs.get("metric", None) == "jaccard":
                 descriptors = descriptors.astype(bool)  # prevent warning
