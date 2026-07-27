@@ -40,27 +40,66 @@ def _pseudo_tasks_long(
     col: str,
     cluster_col: str,
     n_bins_for_regression: int,
+    binning_approach: Literal["gbmt_splits", "qcut"] = "qcut",
 ) -> pl.DataFrame:
     """Stratifies one task column into a long [cluster_col, "pseudo_task"] table:
     one row per non-null datapoint, labeled with the pseudo-task (class, string
     value, or regression bin) it belongs to. Mirrors gbmt-splits' per-column
     pseudo-task expansion, so task columns of different types can be balanced
     jointly by concatenating their pseudo-task tables.
+
+    binning_approach picks how a regression column is cut into bins:
+    - "gbmt_splits": bin the *distinct* sorted values into n equal-sized
+      groups (by count of unique values, not row count) - this is what
+      gbmt-splits itself does, so use it to reproduce its results exactly.
+      With repeated values it can produce very unevenly-sized bins by row
+      count (e.g. one common value dominating a bin), since a value's rows
+      all land wherever that value's rank falls.
+    - "qcut": frequency-weighted quantile bins over all rows, aiming for
+      ~equal row count per bin - generally a more useful balancing signal,
+      especially for duplicate/quantized-heavy columns (e.g. encoded
+      multimodal scores). Note this doesn't fully solve the duplicate-value
+      case either: a single dominant repeated value still can't be split
+      across a bin boundary, so it collapses bins the same way "gbmt_splits"
+      makes one bin oversized - there's no clean fix for a truly dominant
+      repeated value under either scheme.
     """
     sub = df.select(cluster_col, col).drop_nulls(col)
     match _task_type(df.get_column(col)):
         case "regression":
-            values = sub.get_column(col).unique().sort()
-            bins = np.array_split(np.arange(len(values)), n_bins_for_regression)
-            bin_of_rank = np.concatenate(
-                [np.full(len(rank_idx), i) for i, rank_idx in enumerate(bins)]
-            )
-            lookup = pl.DataFrame(
-                {col: values, "pseudo_task": [f"{col}_bin{i}" for i in bin_of_rank]}
-            )
-            return sub.join(lookup, on=col, how="inner").select(
-                cluster_col, "pseudo_task"
-            )
+            match binning_approach:
+                case "gbmt_splits":
+                    # this bins the unique values
+                    # rather than quantile values:
+                    # original behaviour
+                    values = sub.get_column(col).unique().sort()
+                    bins = np.array_split(np.arange(len(values)), n_bins_for_regression)
+                    bin_of_rank = np.concatenate(
+                        [np.full(len(rank_idx), i) for i, rank_idx in enumerate(bins)]
+                    )
+                    lookup = pl.DataFrame(
+                        {
+                            col: values,
+                            "pseudo_task": [f"{col}_bin{i}" for i in bin_of_rank],
+                        }
+                    )
+                    return sub.join(lookup, on=col, how="inner").select(
+                        cluster_col, "pseudo_task"
+                    )
+                case "qcut":
+                    return sub.select(
+                        cluster_col,
+                        pl.col(col)
+                        .qcut(
+                            n_bins_for_regression,
+                            labels=[
+                                f"{col}_bin{i}" for i in range(n_bins_for_regression)
+                            ],
+                            allow_duplicates=True,
+                        )
+                        .cast(pl.Utf8)
+                        .alias("pseudo_task"),
+                    )
         case "classification":
             return sub.select(
                 cluster_col,
@@ -80,6 +119,7 @@ def _task_vs_clusters_df(
     task_cols: str | Sequence[str] = ["pchembl_value_mean"],
     cluster_col: str = "cluster",
     n_bins_for_regression: int | None = 5,
+    binning_approach: Literal["gbmt_splits", "qcut"] = "qcut",
 ) -> pl.DataFrame:
     """
     Create a cross-tabulation 2D numpy array counting the # data points per task, per cluster
@@ -90,6 +130,9 @@ def _task_vs_clusters_df(
             different types (regression, classification, string) - each is
             stratified into pseudo-tasks independently, then balanced jointly.
         cluster_col (str): column representing clusters
+        binning_approach: see `_pseudo_tasks_long` - "qcut" (default) targets
+            ~equal row count per bin; "gbmt_splits" reproduces gbmt-splits'
+            own bin-over-distinct-values behaviour exactly.
     Returns:
         pl.DataFrame: cross-tabulation of shape (num_clusters, num_pseudo_tasks+2)
 
@@ -116,7 +159,9 @@ def _task_vs_clusters_df(
     # script of Tricario et al. can balance them jointly
     pseudo_tasks = pl.concat(
         [
-            _pseudo_tasks_long(df, col, cluster_col, n_bins_for_regression)
+            _pseudo_tasks_long(
+                df, col, cluster_col, n_bins_for_regression, binning_approach
+            )
             for col in task_cols
         ]
     )
@@ -339,12 +384,16 @@ def globally_balanced_split_polars(
     y_cols: str | Sequence[str] = "pchembl_value_mean",
     cluster_col: str = "cluster",
     n_bins_for_regression: int | None = 5,
+    binning_approach: Literal["gbmt_splits", "qcut"] = "qcut",
     **kwargs,
 ) -> tuple[np.ndarray, np.ndarray]:
     """splits the data, returning a cluster -> split assignment mapping as a dictionary
 
-    note: inspired by https://github.com/sohviluukkonen/gbmt-splits/blob/main/gbmtsplits/split.py
+    note: reimplementation of https://github.com/sohviluukkonen/gbmt-splits/blob/main/gbmtsplits/split.py
     implementation of the tricario et al split
+
+    binning_approach: see `_task_vs_clusters_df`/`_pseudo_tasks_long`. Pass
+    "gbmt_splits" to reproduce gbmt-splits' approach.
     """
     lg.info(
         "if you want more than 1 split, you might want to change "
@@ -357,6 +406,7 @@ def globally_balanced_split_polars(
         task_cols=y_cols,
         cluster_col=cluster_col,
         n_bins_for_regression=n_bins_for_regression,
+        binning_approach=binning_approach,
     ).to_numpy()
 
     # the column that is the explicit cluster numbers
