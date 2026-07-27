@@ -9,7 +9,6 @@ from typing import Literal, Sequence
 
 import numpy as np
 import polars as pl
-import polars.selectors as cs
 import pulp  # https://coin-or.github.io/pulp/ for docs
 from numpy.typing import NDArray
 from sklearn.model_selection import StratifiedGroupKFold
@@ -18,19 +17,66 @@ lg = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="[%(name)s] %(message)s")
 
 
-def _task_type(series=pl.Series) -> Literal["regression", "classification_onehot"]:
-    # if float-numerical:
-    if series.dtype.is_float():  # ty: ignore
+def _task_type(
+    series: pl.Series,
+) -> Literal["regression", "classification", "string_classification"]:
+    dtype = series.dtype
+    if dtype.is_integer():
+        return "classification"  # @TODO: add in ordinal classification support
+    if dtype.is_float():
+        values = series.drop_nulls().unique()
+        if len(values) == 0:
+            raise ValueError(f"{series.name} is all-null. please check input")
+        if (values % 1 == 0).all():
+            return "classification"
         return "regression"
-    elif series.dtype.is_int() and set(series.to_list()).difference({0, 1}) == set():  # ty: ignore
-        return "classification_onehot"
-    else:
-        raise NotImplementedError("Other types not yet implemented")
+    if dtype in (pl.Utf8, pl.Categorical):
+        return "string_classification"
+    raise NotImplementedError(f"Unsupported task dtype: {dtype}")
+
+
+def _pseudo_tasks_long(
+    df: pl.DataFrame,
+    col: str,
+    cluster_col: str,
+    n_bins_for_regression: int,
+) -> pl.DataFrame:
+    """Stratifies one task column into a long [cluster_col, "pseudo_task"] table:
+    one row per non-null datapoint, labeled with the pseudo-task (class, string
+    value, or regression bin) it belongs to. Mirrors gbmt-splits' per-column
+    pseudo-task expansion, so task columns of different types can be balanced
+    jointly by concatenating their pseudo-task tables.
+    """
+    sub = df.select(cluster_col, col).drop_nulls(col)
+    match _task_type(df.get_column(col)):
+        case "regression":
+            values = sub.get_column(col).unique().sort()
+            bins = np.array_split(np.arange(len(values)), n_bins_for_regression)
+            bin_of_rank = np.concatenate(
+                [np.full(len(rank_idx), i) for i, rank_idx in enumerate(bins)]
+            )
+            lookup = pl.DataFrame(
+                {col: values, "pseudo_task": [f"{col}_bin{i}" for i in bin_of_rank]}
+            )
+            return sub.join(lookup, on=col, how="inner").select(
+                cluster_col, "pseudo_task"
+            )
+        case "classification":
+            return sub.select(
+                cluster_col,
+                pl.concat_str(
+                    [pl.lit(f"{col}_"), pl.col(col).cast(pl.Int64).cast(pl.Utf8)]
+                ).alias("pseudo_task"),
+            )
+        case "string_classification":
+            return sub.select(
+                cluster_col,
+                pl.concat_str([pl.lit(f"{col}_"), pl.col(col)]).alias("pseudo_task"),
+            )
 
 
 def _task_vs_clusters_df(
     df: pl.DataFrame,
-    x_col: str = "activity_id",
     task_cols: str | Sequence[str] = ["pchembl_value_mean"],
     cluster_col: str = "cluster",
     n_bins_for_regression: int | None = 5,
@@ -40,10 +86,12 @@ def _task_vs_clusters_df(
 
     Args:
         df (pl.DataFrame): input dataframe
-        task_cols (Sequence[str]): columns representing tasks. should be a single column
+        task_cols (Sequence[str]): columns representing tasks. Columns may be of
+            different types (regression, classification, string) - each is
+            stratified into pseudo-tasks independently, then balanced jointly.
         cluster_col (str): column representing clusters
     Returns:
-        np.ndarray: 2D array of shape (num_tasks+1, num_clusters)
+        pl.DataFrame: cross-tabulation of shape (num_clusters, num_pseudo_tasks+2)
 
     Comment:
         In the returned array
@@ -54,55 +102,34 @@ def _task_vs_clusters_df(
         see: https://chemrxiv.org/engage/api-gateway/chemrxiv/assets/orp/resource/item/660581be9138d231618d6047/original/readme-md.md
 
     """
-    # @TODO: figure out how to do it nice and polars-y
-    task_cols = list(task_cols)
-    df = df.lazy().select([x_col, cluster_col] + task_cols).collect()
-    types = set(
-        (
-            _task_type(df.select(col).lazy().collect().get_column(col))
-            for col in task_cols
+    task_cols = [task_cols] if isinstance(task_cols, str) else list(task_cols)
+    if not n_bins_for_regression:
+        lg.warning(
+            "`n_bins_for_regression` == None, using 5 bins for any regression tasks"
         )
-    )
-    if len(types) > 1:
-        raise NotImplementedError("No support for multiple types of tasks (yet?)")
-    type = list(types)[0]
-    match type:
-        case "regression":
-            if not n_bins_for_regression:
-                lg.warning(
-                    "`n_bins_for_regression` == None,but is regression task: using 5 bins"
-                )
-                n_bins_for_regression = 5
-            df = df.with_columns(
-                pl.col(col)
-                .qcut(5, labels=[f"bin_{i}" for i in range(5)])
-                .alias(f"{col}_binned")
-                for col in task_cols
-            ).drop(task_cols)
-            to_pivot_on = cs.ends_with("_binned")
-        case "classification_onehot":
-            df = (
-                df.unpivot(
-                    on=task_cols,
-                    index=x_col,
-                    variable_name="class",
-                    value_name="value",
-                )
-                .drop("value")
-                .cast({"class": pl.Categorical})
-            )
-            to_pivot_on = "class"
+        n_bins_for_regression = 5
 
-    # now that the task is one long-column of possibilities, we pivot it to the
-    # format required for the split-balancing script of Tricario et al.
+    df = df.lazy().select([cluster_col] + task_cols).collect()
+
+    # each task column is stratified into pseudo-tasks independently of the
+    # others' types, then concatenated into one long table so the split-balancing
+    # script of Tricario et al. can balance them jointly
+    pseudo_tasks = pl.concat(
+        [
+            _pseudo_tasks_long(df, col, cluster_col, n_bins_for_regression)
+            for col in task_cols
+        ]
+    )
+
     return (
-        df.pivot(
-            on=to_pivot_on,
+        pseudo_tasks.pivot(  # to wide-format
+            on="pseudo_task",
             index=cluster_col,
-            values=x_col,
+            values=cluster_col,
             aggregate_function="len",
             sort_columns=True,
         )
+        .fill_null(0)
         .join(
             df.group_by(cluster_col).agg(pl.len().alias("number")),
             on=cluster_col,
@@ -309,11 +336,9 @@ def _balance_splits_from_tasks_vs_clusters_array(
 def globally_balanced_split_polars(
     df: pl.DataFrame,
     split_sizes: Sequence[float] = [0.2, 0.2, 0.2, 0.2, 0.2],
-    x_col: str = "activity_id",
     y_cols: str | Sequence[str] = "pchembl_value_mean",
     cluster_col: str = "cluster",
     n_bins_for_regression: int | None = 5,
-    alias: str = "split",
     **kwargs,
 ) -> tuple[np.ndarray, np.ndarray]:
     """splits the data, returning a cluster -> split assignment mapping as a dictionary
@@ -329,7 +354,6 @@ def globally_balanced_split_polars(
     # rows: clusters, cols: tasks
     clusters_vs_tasks_df = _task_vs_clusters_df(
         df=df,
-        x_col=x_col,
         task_cols=y_cols,
         cluster_col=cluster_col,
         n_bins_for_regression=n_bins_for_regression,
@@ -347,13 +371,6 @@ def globally_balanced_split_polars(
         **kwargs,
     )
     return clusters, split_assignments
-    # mapping = pl.DataFrame(
-    #     [
-    #         pl.Series(name=cluster_col, values=clusters),
-    #         pl.Series(name=alias, values=split_assignments),
-    #     ]
-    # )
-    # return df.lazy().join(mapping.lazy(), on=cluster_col, how="left").collect()
 
 
 def sklearn_split(
@@ -431,14 +448,11 @@ def split(
             return globally_balanced_split_polars(
                 df=df,
                 split_sizes=[1 / n_splits] * n_splits,
-                x_col=X_col,
                 y_cols=y_cols,
                 cluster_col=cluster_col,
-                alias="split",
                 **kwargs,
             )
         case "sklearn":
-            lg.warning("`method=sklearn` validity not tested yet!")
             y = df.lazy().select(y_cols).collect()
             # print(y[:10])
             # print(y.to_numpy()[:10])
