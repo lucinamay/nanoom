@@ -153,10 +153,10 @@ def test_task_vs_clusters_df_regression_bins_row_count_balance():
     df = pl.DataFrame({"cluster": np.arange(n) % 10, "reg": reg})
 
     qcut_out = _task_vs_clusters_df(
-        df, task_cols=["reg"], cluster_col="cluster", regression_bins="qcut"
+        df, task_cols=["reg"], cluster_col="cluster", binning_approach="qcut"
     )
     gbmt_out = _task_vs_clusters_df(
-        df, task_cols=["reg"], cluster_col="cluster", regression_bins="gbmt_splits"
+        df, task_cols=["reg"], cluster_col="cluster", binning_approach="gbmt_splits"
     )
     qcut_bin_totals = qcut_out.select(pl.exclude("cluster", "number")).sum().row(0)
     gbmt_bin_totals = gbmt_out.select(pl.exclude("cluster", "number")).sum().row(0)
@@ -351,7 +351,7 @@ def test_tricario_matches_gbmtsplits_reference():
 
     # explicit matching settings on both sides - the two libraries' defaults
     # differ (equal_weight_perc_compounds_as_tasks, gap type/value, and
-    # nanoom's regression_bins defaults to "qcut" rather than gbmt-splits'
+    # nanoom's binning_approach defaults to "qcut" rather than gbmt-splits'
     # own bin-over-distinct-values behaviour), so relying on defaults would
     # compare different problems, not the same one
     nanoom_clusters, nanoom_assign = globally_balanced_split_polars(
@@ -360,7 +360,7 @@ def test_tricario_matches_gbmtsplits_reference():
         y_cols=tasks,
         cluster_col="cluster",
         equal_weight_perc_compounds_as_tasks=True,
-        regression_bins="gbmt_splits",
+        binning_approach="gbmt_splits",
         relative_gap=0,
         n_jobs=1,
         time_limit_seconds=45,

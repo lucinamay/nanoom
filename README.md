@@ -54,7 +54,7 @@ Both methods return `(clusters, split_assignment)`: the unique cluster values, a
 which split each cluster was assigned to.
 
 For regression task columns, `method="tricario"` bins values before balancing
-(`regression_bins=`, default `"qcut"`): `"qcut"` targets roughly equal n_datapoints per
+(`binning_approach=`, default `"qcut"`): `"qcut"` targets roughly equal n_datapoints per
 bin; `"gbmt_splits"` instead bins the distinct values (matching gbmt-splits'
 behaviour).
 for repeated values this can skew row counts across bins. Neither option fully
