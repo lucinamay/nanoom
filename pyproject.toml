@@ -1,19 +1,20 @@
 [project]
 name = "nanoom"
-version = "0.1.0"
+version = "0.1.0-20260504"
 description = "balanced data splitting"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.11" # inherent to bblean. code itself is 3.10
+authors= [{name = "lucina-may"}]
 dependencies = [
-    "jax",
-    "polars>=1.36.1",
+    "polars>=1.35",
     "pulp>=3.3.0",
     "scikit-learn>=1.7.2",
 ]
 
 
 [project.optional-dependencies]
-cuda13 = [
+jax_cuda13 = [
+    "jax",
     "jax[cuda13]",
 ]
 chem = [
@@ -22,12 +23,6 @@ chem = [
     "bblean>=0.8.1",
 ]
 
-dev = [
-    "nanoom[chem]",
-    "nanoom[cuda13]",
-    "pytest",
-    "ruff",
-]
 tutorial = [
     "marimo",
 ]
@@ -38,3 +33,30 @@ package-dir = {"" = "."}
 
 [tool.setuptools.packages.find]
 where = ["."]
+
+[tool.uv.workspace]
+members = [
+    ".",
+    ".",
+]
+
+[tool.uv.sources]
+nanoom = { workspace = true, editable = true }
+
+
+[dependency-groups]
+dev = [
+  {include-group = "lint"},
+  {include-group = "test"}
+]
+lint = [
+  "ruff"
+]
+test = [
+    "nanoom[chem]",
+    "pytest>=9.0.2",
+]
+
+
+[project.urls]
+Homepage = "https://github.com/lucinamay/nanoom"
