@@ -7,6 +7,13 @@ import numpy as np
 from sklearn.cluster import DBSCAN, HDBSCAN, KMeans
 from sklearn.metrics import silhouette_score as sk_silhouette
 
+BIT_CLUSTERING_METHODS = {
+    "sphere_exclusion",
+    "bitbirch",
+    "maxmin",
+    "leader_picker",
+}
+
 
 def _auto_n_clusters(descriptors: np.ndarray) -> int:
     n_clusters = len(descriptors) // 10 + 1
@@ -19,7 +26,7 @@ def random_clustering(
 ) -> np.ndarray:
     n_clusters = n_clusters if n_clusters is not None else _auto_n_clusters(descriptors)
     return (
-        np.ndarray(np.random.RandomState(seed=seed).permutation(len(descriptors)))
+        np.asarray(np.random.RandomState(seed=seed).permutation(len(descriptors)))
         % n_clusters
     )
 
@@ -28,14 +35,14 @@ def dummy_hash_clustering(
     descriptors: np.ndarray, n_clusters: int | None = None
 ) -> np.ndarray:
     n_clusters = n_clusters if n_clusters is not None else _auto_n_clusters(descriptors)
-    return np.ndarray(descriptors) % n_clusters
+    hashes = np.array([hash(row.tobytes()) for row in descriptors])
+    return (hashes % n_clusters).astype(np.int32)
 
 
 def cluster(
     descriptors: np.ndarray,
     method: Literal[
         "kmeans",
-        "kmeans_10pct",
         "dbscan",
         "hdbscan",
         "sphere_exclusion",
@@ -59,17 +66,18 @@ def cluster(
         np.ndarray: array of cluster indices per descriptor
 
     Notes:
+        - If descriptor is a bit vector, DBSCAN will use Jaccard metric by default.
         - If `n_clusters` is provided as a float between 0 and 1, it is interpreted
           as the fraction of the dataset size to use as the number of clusters (plus 1).
     """
     # if descriptors are square matrix, assume its a distance matrix and convert to condensed form
     if len(descriptors.shape) == 2 and descriptors.shape[0] == descriptors.shape[1]:
-        raise NotImplementedError(
-            "Clustering from distance matrix not implemented yet."
+        lg.warning(
+            "Descriptors appear to be a square distance matrix, but clustering methods expect feature vectors. Proceeding anyway."
         )
     n_clusters = kwargs.get("n_clusters", None)
     if n_clusters and n_clusters < 1 and n_clusters > 0:
-        kwargs["n_clusters"] = descriptors.shape[0] // (1 / n_clusters) + 1
+        kwargs["n_clusters"] = int(descriptors.shape[0] // (1 / n_clusters) + 1)
         lg.info(
             f"Interpreting n_clusters={n_clusters} as fraction, setting n_clusters to {kwargs['n_clusters']}"
         )
@@ -82,7 +90,11 @@ def cluster(
                 descriptors = descriptors.astype(bool)  # prevent warning
             return DBSCAN(*args, **kwargs).fit(descriptors).labels_
         case "hdbscan":
-            return HDBSCAN(*args, **kwargs).fit(descriptors).labels_
+            return (
+                HDBSCAN(*args, copy=kwargs.pop("copy", False), **kwargs)
+                .fit(descriptors)
+                .labels_
+            )
         case "sphere_exclusion":
             from nanoom.chem import _sphere_exclusion
 
