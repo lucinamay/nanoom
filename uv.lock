@@ -242,6 +242,26 @@ wheels = [
 ]
 
 [[package]]
+name = "gbmtsplits"
+version = "0.0.8"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "matplotlib" },
+    { name = "numpy" },
+    { name = "pandas" },
+    { name = "parameterized" },
+    { name = "pulp" },
+    { name = "rdkit" },
+    { name = "scikit-learn" },
+    { name = "seaborn" },
+    { name = "tqdm" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/5c/04/0aa57e3182f9793b6bbe257122975b45586215bcdb1ad107cfbc99abe16f/gbmtsplits-0.0.8.tar.gz", hash = "sha256:7e61341cb070ce7d7ab166cbb1a41db6d5f3384657fad4626a2debfb837c83c4", size = 73699, upload-time = "2024-06-04T09:47:41.05Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/1b/3e/c0cd35eae6ae617c97ad2cc7bb80170787fe312854f6302c1996fabb3403/gbmtsplits-0.0.8-py3-none-any.whl", hash = "sha256:779f28f3404ebaa796917c019f215e92b8a0a59a65286d21d6cd1ba3b4d3693c", size = 45035, upload-time = "2024-06-04T09:47:38.806Z" },
+]
+
+[[package]]
 name = "h11"
 version = "0.16.0"
 source = { registry = "https://pypi.org/simple" }
@@ -820,7 +840,7 @@ wheels = [
 [[package]]
 name = "nanoom"
 version = "0.1.0.post20260504"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "polars" },
     { name = "pulp" },
@@ -836,12 +856,16 @@ chem = [
 jax-cuda13 = [
     { name = "jax", extra = ["cuda13"] },
 ]
+plotting = [
+    { name = "matplotlib" },
+]
 tutorial = [
     { name = "marimo" },
 ]
 
 [package.dev-dependencies]
 dev = [
+    { name = "gbmtsplits" },
     { name = "nanoom", extra = ["chem"] },
     { name = "pytest" },
     { name = "ruff" },
@@ -850,6 +874,7 @@ lint = [
     { name = "ruff" },
 ]
 test = [
+    { name = "gbmtsplits" },
     { name = "nanoom", extra = ["chem"] },
     { name = "pytest" },
 ]
@@ -860,23 +885,26 @@ requires-dist = [
     { name = "jax", marker = "extra == 'jax-cuda13'" },
     { name = "jax", extras = ["cuda13"], marker = "extra == 'jax-cuda13'" },
     { name = "marimo", marker = "extra == 'tutorial'" },
+    { name = "matplotlib", marker = "extra == 'plotting'" },
     { name = "polars", specifier = ">=1.35" },
     { name = "pulp", specifier = ">=3.3.0" },
     { name = "rdkit", marker = "extra == 'chem'", specifier = ">=2025.3.6" },
     { name = "rich", marker = "extra == 'chem'", specifier = ">=14.2.0" },
     { name = "scikit-learn", specifier = ">=1.7.2" },
 ]
-provides-extras = ["jax-cuda13", "chem", "tutorial"]
+provides-extras = ["jax-cuda13", "chem", "tutorial", "plotting"]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "nanoom", extras = ["chem"], virtual = "." },
+    { name = "gbmtsplits", specifier = ">=0.0.8" },
+    { name = "nanoom", extras = ["chem"], editable = "." },
     { name = "pytest", specifier = ">=9.0.2" },
     { name = "ruff" },
 ]
 lint = [{ name = "ruff" }]
 test = [
-    { name = "nanoom", extras = ["chem"], virtual = "." },
+    { name = "gbmtsplits", specifier = ">=0.0.8" },
+    { name = "nanoom", extras = ["chem"], editable = "." },
     { name = "pytest", specifier = ">=9.0.2" },
 ]
 
@@ -1257,6 +1285,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/34/a0/ed160a00fb4f37d806406bc0a79a8b62fe67f29d00950f8d16203ff3409b/pandas-3.0.0-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:125eb901e233f155b268bbef9abd9afb5819db74f0e677e89a61b246228c71ac", size = 11799386, upload-time = "2026-01-21T15:51:57.457Z" },
     { url = "https://files.pythonhosted.org/packages/36/c8/2ac00d7255252c5e3cf61b35ca92ca25704b0188f7454ca4aec08a33cece/pandas-3.0.0-cp314-cp314t-win_amd64.whl", hash = "sha256:b86d113b6c109df3ce0ad5abbc259fe86a1bd4adfd4a31a89da42f84f65509bb", size = 10873041, upload-time = "2026-01-21T15:52:00.034Z" },
     { url = "https://files.pythonhosted.org/packages/e6/3f/a80ac00acbc6b35166b42850e98a4f466e2c0d9c64054161ba9620f95680/pandas-3.0.0-cp314-cp314t-win_arm64.whl", hash = "sha256:1c39eab3ad38f2d7a249095f0a3d8f8c22cc0f847e98ccf5bbe732b272e2d9fa", size = 9441003, upload-time = "2026-01-21T15:52:02.281Z" },
+]
+
+[[package]]
+name = "parameterized"
+version = "0.9.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/ea/49/00c0c0cc24ff4266025a53e41336b79adaa5a4ebfad214f433d623f9865e/parameterized-0.9.0.tar.gz", hash = "sha256:7fc905272cefa4f364c1a3429cbbe9c0f98b793988efb5bf90aac80f08db09b1", size = 24351, upload-time = "2023-03-27T02:01:11.592Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/00/2f/804f58f0b856ab3bf21617cccf5b39206e6c4c94c2cd227bde125ea6105f/parameterized-0.9.0-py2.py3-none-any.whl", hash = "sha256:4e0758e3d41bea3bbd05ec14fc2c24736723f243b28d702081aef438c9372b1b", size = 20475, upload-time = "2023-03-27T02:01:09.31Z" },
 ]
 
 [[package]]

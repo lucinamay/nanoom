@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "nanoom"
 version = "0.1.0-20260504"
@@ -25,6 +29,10 @@ chem = [
 
 tutorial = [
     "marimo",
+]
+
+plotting = [
+    "matplotlib",
 ]
 
 
@@ -55,6 +63,7 @@ lint = [
 test = [
     "nanoom[chem]",
     "pytest>=9.0.2",
+    "gbmtsplits>=0.0.8",
 ]
 
 
