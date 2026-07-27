@@ -3,7 +3,7 @@ balancing, splitting
 
 """
 
-import logging as lg
+import logging
 import os
 from typing import Literal, Sequence
 
@@ -13,6 +13,9 @@ import polars.selectors as cs
 import pulp  # https://coin-or.github.io/pulp/ for docs
 from numpy.typing import NDArray
 from sklearn.model_selection import StratifiedGroupKFold
+
+lg = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO, format="[%(name)s] %(message)s")
 
 
 def _task_type(series=pl.Series) -> Literal["regression", "classification_onehot"]:
@@ -168,12 +171,15 @@ def _balance_splits_from_tasks_vs_clusters_array(
     Note: from https://doi.org/10.26434/chemrxiv-2022-m8l33-v3, original code can be found at
     https://chemrxiv.org/engage/api-gateway/chemrxiv/assets/orp/resource/item/660581be9138d231618d604c/original/balance-data-from-tasks-vs-clusters-array-pulp-py.py
     """
+    lg.debug(
+        f"Splitting data with {n_jobs} jobs and a time limit of {time_limit_seconds} seconds"
+    )
     # Calculate the fractions from sizes
-
     fractional_sizes = split_sizes / np.sum(split_sizes)
     S = len(split_sizes)
 
     # Normalise the data matrix
+
     tasks_vs_clusters_array = tasks_vs_clusters_array / tasks_vs_clusters_array.sum(
         axis=1, keepdims=True
     )
@@ -351,12 +357,32 @@ def globally_balanced_split_polars(
 
 
 def sklearn_split(
-    X: NDArray, y: NDArray, group_on: NDArray, random_state: int, n_splits: int = 5
+    X: NDArray,
+    y: NDArray,
+    group_on: NDArray,
+    random_state: int,
+    n_splits: int = 5,
+    n_bins_for_regression: int | None = 5,
 ) -> tuple[np.ndarray, np.ndarray]:
     """returns jnp.ndarray of shape group_on.shape[0], n_splits"""
     splitter = StratifiedGroupKFold(
         n_splits=n_splits, shuffle=True, random_state=random_state
     )
+    assert isinstance(group_on, np.ndarray), "group_on must be a np.ndarray"
+    assert isinstance(X, np.ndarray), "X must be a np.ndarray"
+    assert isinstance(y, np.ndarray), "y must be a np.ndarray"
+
+    y = np.array(y)
+
+    if y.dtype.kind in "fc":  # float or complex
+        assert n_bins_for_regression is not None, (
+            "n_bins_for_regression cannot be None for regression tasks"
+        )
+        n_bins = n_bins_for_regression
+        y = np.searchsorted(
+            np.quantile(y, np.linspace(0, 1, n_bins + 1))[1:-1], y, side="right"
+        )
+
     split_idx = np.zeros((X.shape[0], n_splits))
     for k, (train_idx, test_idx) in enumerate(
         splitter.split(
@@ -371,7 +397,7 @@ def sklearn_split(
         "Each row should be assigned to only one test split"
     )
     # now squish them by assigning np.nan to the 0s, and the column number to the 1s
-    split_idx = np.where(split_idx == 1, np.arange(n_splits), np.nan)
+    split_idx = np.argmax(split_idx, axis=1)
     return group_on, split_idx
 
 
@@ -412,11 +438,24 @@ def split(
                 **kwargs,
             )
         case "sklearn":
-            lg.warning("Not tested yet!")
+            lg.warning("`method=sklearn` validity not tested yet!")
+            y = df.lazy().select(y_cols).collect()
+            # print(y[:10])
+            # print(y.to_numpy()[:10])
+            X = (
+                df.select(X_col)
+                .fill_null(strategy="forward")  # not returned anyway
+                .lazy()
+                .collect()[X_col]
+                .to_numpy()
+            )
+            group_on = df.select(cluster_col).lazy().collect().to_numpy().squeeze()
+            if not "random_state" in kwargs:
+                kwargs["random_state"] = 0
             return sklearn_split(
-                X=df.select(X_col).to_numpy(),
-                y=df.select(y_cols).to_numpy(),
-                group_on=df.select(cluster_col).to_numpy().squeeze(),
+                X=X,
+                y=y.to_numpy()[:, 0],
+                group_on=group_on,
                 n_splits=n_splits,
                 **kwargs,
             )
