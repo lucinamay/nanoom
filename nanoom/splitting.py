@@ -42,27 +42,10 @@ def _pseudo_tasks_long(
     n_bins_for_regression: int,
     binning_approach: Literal["gbmt_splits", "qcut"] = "qcut",
 ) -> pl.DataFrame:
-    """Stratifies one task column into a long [cluster_col, "pseudo_task"] table:
-    one row per non-null datapoint, labeled with the pseudo-task (class, string
-    value, or regression bin) it belongs to. Mirrors gbmt-splits' per-column
-    pseudo-task expansion, so task columns of different types can be balanced
-    jointly by concatenating their pseudo-task tables.
+    """Converts one task column into stratification pseudo-tasks (class, string, or regression bin).
 
-    binning_approach picks how a regression column is cut into bins:
-    - "gbmt_splits": bin the *distinct* sorted values into n equal-sized
-      groups (by count of unique values, not row count) - this is what
-      gbmt-splits itself does, so use it to reproduce its results exactly.
-      With repeated values it can produce very unevenly-sized bins by row
-      count (e.g. one common value dominating a bin), since a value's rows
-      all land wherever that value's rank falls.
-    - "qcut": frequency-weighted quantile bins over all rows, aiming for
-      ~equal row count per bin - generally a more useful balancing signal,
-      especially for duplicate/quantized-heavy columns (e.g. encoded
-      multimodal scores). Note this doesn't fully solve the duplicate-value
-      case either: a single dominant repeated value still can't be split
-      across a bin boundary, so it collapses bins the same way "gbmt_splits"
-      makes one bin oversized - there's no clean fix for a truly dominant
-      repeated value under either scheme.
+    binning_approach: "gbmt_splits" reproduces the original algorithm (bins unique values equally);
+    "qcut" (default) balances row counts per bin (better for repeated values).
     """
     sub = df.select(cluster_col, col).drop_nulls(col)
     match _task_type(df.get_column(col)):
@@ -121,30 +104,10 @@ def _task_vs_clusters_df(
     n_bins_for_regression: int | None = 5,
     binning_approach: Literal["gbmt_splits", "qcut"] = "qcut",
 ) -> pl.DataFrame:
-    """
-    Create a cross-tabulation 2D numpy array counting the # data points per task, per cluster
+    """Cross-tabulation of task counts per cluster. Format required by the LP balancer.
 
-    Args:
-        df (pl.DataFrame): input dataframe
-        task_cols (Sequence[str]): columns representing tasks. Columns may be of
-            different types (regression, classification, string) - each is
-            stratified into pseudo-tasks independently, then balanced jointly.
-        cluster_col (str): column representing clusters
-        binning_approach: see `_pseudo_tasks_long` - "qcut" (default) targets
-            ~equal row count per bin; "gbmt_splits" reproduces gbmt-splits'
-            own bin-over-distinct-values behaviour exactly.
-    Returns:
-        pl.DataFrame: cross-tabulation of shape (num_clusters, num_pseudo_tasks+2)
-
-    Comment:
-        In the returned array
-        - each column is a unique initial cluster
-        - each row is a unique task
-        (except the first row, which is the total # objects in the cluster)
-        This is the format requrired by the balancing algorithm
-        see: https://chemrxiv.org/engage/api-gateway/chemrxiv/assets/orp/resource/item/660581be9138d231618d6047/original/readme-md.md
-
-    """
+    Rows: tasks (or regression bins), Columns: clusters. First column is cluster ID,
+    second is total count, rest are pseudo-task counts."""
     task_cols = [task_cols] if isinstance(task_cols, str) else list(task_cols)
     if not n_bins_for_regression:
         lg.warning(
@@ -475,24 +438,11 @@ def split(
     cluster_col: str,
     n_splits: int,
     method: Literal["tricario", "sklearn"],
-    *args,
     **kwargs,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Takes a regular dataframe with various X-y columns
-    (these do not have to be unique X's) and turns them into
-    a tuple of the original cluster values to test split indices
-    Args:
-        df: polars DataFrame
-        X_col: str, name of the column representing X values (e.g. activity_id)
-        y_cols: Sequence[str] | str, name(s) of the column(s) representing y values (e.g. pchembl_value_mean)
-        cluster_col: str, name of the column representing cluster assignments
-        n_splits: int, number of splits to create
-        method: Literal["tricario", "sklearn"], method to use for splitting
-    Returns:
-        tuple[np.ndarray, np.ndarray]: (clusters, split assignments)
-    0th array is the original cluster values
-    1st array is the split assignments to test (of shape (num_clusters, n_splits
-    """
+    """Route to tricario (multi-task LP balancing) or sklearn (StratifiedGroupKFold).
+
+    Returns: (cluster_ids, split_assignment_per_cluster) where split_assignment is 0..n_splits-1."""
     match method:
         case "tricario":
             return globally_balanced_split_polars(
@@ -503,12 +453,12 @@ def split(
                 **kwargs,
             )
         case "sklearn":
-            y = df.lazy().select(y_cols).collect()
-            # print(y[:10])
-            # print(y.to_numpy()[:10])
+            y_data = df.lazy().select(y_cols).collect()
+            if y_data.width > 1:
+                raise ValueError(f"sklearn_split supports only 1 task column, got {y_data.width}")
             X = (
                 df.select(X_col)
-                .fill_null(strategy="forward")  # not returned anyway
+                .fill_null(strategy="forward")
                 .lazy()
                 .collect()[X_col]
                 .to_numpy()
@@ -518,7 +468,7 @@ def split(
                 kwargs["random_state"] = 0
             return sklearn_split(
                 X=X,
-                y=y.to_numpy()[:, 0],
+                y=y_data.to_numpy()[:, 0],
                 group_on=group_on,
                 n_splits=n_splits,
                 **kwargs,
