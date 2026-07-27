@@ -7,12 +7,10 @@ from typing import Sequence
 
 import bblean
 import numpy as np
-from rdkit import Chem, DataStructs
-from rdkit.Chem.Scaffolds import MurckoScaffold
+from rdkit import DataStructs
 from rdkit.DataStructs import ExplicitBitVect
 from rdkit.SimDivFilters import rdSimDivPickers
 from rich.progress import track
-from scipy.sparse import load_npz
 
 # ==================== own implementations ====================
 
