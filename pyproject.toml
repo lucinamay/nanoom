@@ -55,7 +55,8 @@ nanoom = { workspace = true, editable = true }
 [dependency-groups]
 dev = [
   {include-group = "lint"},
-  {include-group = "test"}
+  {include-group = "test"},
+  "pytest-cov>=7.1.0",
 ]
 lint = [
   "ruff"
@@ -69,3 +70,7 @@ test = [
 
 [project.urls]
 Homepage = "https://github.com/lucinamay/nanoom"
+
+[tool.pytest.ini_options]
+addopts = "--doctest-modules --cov=nanoom --cov-report=term-missing"
+testpaths = ["tests", "nanoom"]
