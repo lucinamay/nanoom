@@ -1,4 +1,8 @@
 .*
+*.md
+!README.md
+!ARCHITECTURE.md
+!CONTRIBUTING.md
 !.gitignore
 !.github*
 next_version.py
