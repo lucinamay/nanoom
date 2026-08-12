@@ -41,6 +41,28 @@ def test_split_y_means_values():
     assert np.allclose(means, [2.0, 15.0])
 
 
+@pytest.mark.parametrize(
+    "fn,args",
+    [
+        (ev.check_no_group_overlap, (np.arange(12), np.zeros(60, dtype=int))),
+        (ev.check_distribution_y_similar, (np.arange(60.0), np.zeros(12, dtype=int))),
+        (ev.split_y_means, (np.arange(60.0), np.zeros(12, dtype=int))),
+        (ev.min_distances_splits, (np.zeros((60, 3)), np.zeros(12, dtype=int))),
+    ],
+)
+def test_eval_raises_on_length_mismatch(fn, args):
+    kwargs = {"metric": "euclidean"} if fn is ev.min_distances_splits else {}
+    with pytest.raises(ValueError, match="must be per-row and aligned"):
+        fn(*args, **kwargs)
+
+
+def test_split_y_means_with_noncontiguous_split_labels():
+    # labels are not guaranteed to be 0..n-1; means come back ordered by sorted label
+    y = np.array([1.0, 3.0, 10.0, 20.0])
+    splits = np.array([2, 2, 7, 7])
+    assert np.allclose(ev.split_y_means(y, splits), [2.0, 15.0])
+
+
 def test_min_distances_splits_euclidean():
     rng = np.random.default_rng(0)
     split_a = rng.normal(loc=0.0, scale=0.05, size=(10, 2))

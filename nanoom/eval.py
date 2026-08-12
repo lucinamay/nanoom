@@ -17,9 +17,25 @@ def _numpy_jaccard(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     return 1 - intersection / union
 
 
+def _same_length_arrays(
+    a, b, a_name: str, b_name: str
+) -> tuple[np.ndarray, np.ndarray]:
+    """As numpy arrays (accepts polars Series / lists), raising if lengths differ."""
+    a, b = np.asarray(a), np.asarray(b)
+    if len(a) != len(b):
+        raise ValueError(
+            f"{a_name} has length {len(a)} but {b_name} has length {len(b)}; "
+            "both must be per-row and aligned"
+        )
+    return a, b
+
+
 def min_distances_splits(
     descriptors: np.ndarray, splits: np.ndarray, metric: Literal["euclidean", "jaccard"]
 ) -> list[dict]:
+    descriptors, splits = _same_length_arrays(
+        descriptors, splits, "descriptors", "splits"
+    )
     # loop ovebr the different values in the split
     results = []
     match metric:
@@ -50,17 +66,21 @@ def min_distances_splits(
 
 
 def split_y_means(y, splits):
+    """Mean of y per split, ordered by sorted split label.
+
+    Indexed by position, not by the split label itself: labels are not guaranteed
+    to be 0..n-1 (user may pass names, or a subset of folds)."""
+    y, splits = _same_length_arrays(y, splits, "y", "splits")
     means = np.zeros(len(set(splits)))
-    for split in sorted(set(splits)):
+    for i, split in enumerate(sorted(set(splits))):
         split_indices = np.where(splits == split)[0]
-        split_y = y[split_indices]
-        means[split] = split_y.mean()
+        means[i] = y[split_indices].mean()
     return means
 
 
 def check_distribution_y_similar(y, splits):
     means = split_y_means(y, splits)
-    overall_mean = y.mean()
+    overall_mean = np.asarray(y).mean()
     if not np.allclose(means, overall_mean, rtol=0.1):
         raise ValueError(
             f"Means of y in splits are not similar: {means}, overall mean: {overall_mean}"
@@ -68,6 +88,7 @@ def check_distribution_y_similar(y, splits):
 
 
 def check_no_group_overlap(group_by, splits):
+    group_by, splits = _same_length_arrays(group_by, splits, "group_by", "splits")
     unique_groups = np.unique(group_by)
     group_split_counts = np.array(
         [np.unique(splits[group_by == g]).size for g in unique_groups]
