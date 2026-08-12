@@ -12,11 +12,14 @@ if __name__ == "__main__":
         pl.col("smiles").map_elements(lambda x: hash(x) % 100).alias("cluster")
     )
 
-    train, test = split(
+    out = split(
         df=df,
-        X_col="smiles",
         y_cols=["pchembl_value_mean"],
         cluster_col="cluster",
         method="sklearn",
         n_splits=3,
     )
+    # fold 0 is the test set, the rest is training
+    train = out.filter(pl.col("split") != 0)
+    test = out.filter(pl.col("split") == 0)
+    print(f"{train.height} train rows, {test.height} test rows")

@@ -11,7 +11,7 @@ import numpy as np
 import polars as pl
 import pulp  # https://coin-or.github.io/pulp/ for docs
 from numpy.typing import NDArray
-from sklearn.model_selection import StratifiedGroupKFold
+from sklearn.model_selection import StratifiedGroupKFold, StratifiedKFold
 
 lg = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="[%(name)s] %(message)s")
@@ -160,7 +160,7 @@ def _balance_splits_from_tasks_vs_clusters_array(
     split_sizes: list[float] = [0.2, 0.2, 0.2, 0.2, 0.2],
     equal_weight_perc_compounds_as_tasks: bool = False,
     relative_gap: int = 0,
-    time_limit_seconds: float = 60 * 60,
+    time_limit_seconds: float = 5 * 60,  # og: 60m but no one has the time
     n_jobs: int = int((os.cpu_count() or 1) // 1.2) + 1,
     verbose: bool = False,
 ) -> np.ndarray:
@@ -188,7 +188,7 @@ def _balance_splits_from_tasks_vs_clusters_array(
             far too long to be found to be of any practical use.
             - set to 0 to obtain the absolute optimal solution (if reached within the time_limit_seconds)
         time_limit_seconds : int
-            - the time limit in seconds for the solver (by default set to 1 hour)
+            - the time limit in seconds for the solver (by default 5 minutes)
             - after this time, whatever solution is available is returned
         n_jobs : int
             - the maximal number of threads to be used by the solver.
@@ -234,6 +234,17 @@ def _balance_splits_from_tasks_vs_clusters_array(
     if relative_gap < 0:
         errormessage = f"relative gap should be 0 or positive, is {relative_gap}"
         raise ValueError(errormessage)
+
+    # N clusters * S splits binary variables; proving exact optimality gets
+    # expensive well before the time limit does
+    if N > 1000:
+        lg.warning(
+            f"balancing {N} clusters into {S} splits = {N * S} binary variables. "
+            "CBC may not prove optimality within `time_limit_seconds` "
+            f"(currently {time_limit_seconds}s), and will return its best solution "
+            "so far. Pass `relative_gap` (e.g. 0.01) to stop at a near-optimal "
+            "solution quickly, or cluster more coarsely."
+        )
 
     # Given matrix A (M x N) of fraction of data per cluster, assign each cluster to one of S final ML subsets,
     # so that the fraction of data per ML subset is closest to the corresponding fraction_size.
@@ -349,11 +360,11 @@ def globally_balanced_split_polars(
     n_bins_for_regression: int | None = 5,
     binning_approach: Literal["gbmt_splits", "qcut"] = "qcut",
     **kwargs,
-) -> tuple[np.ndarray, np.ndarray]:
-    """splits the data, returning a cluster -> split assignment mapping as a dictionary
+) -> tuple[pl.Series, np.ndarray]:
+    """splits the data, returning the unique clusters and the split each was assigned to
 
     note: reimplementation of https://github.com/sohviluukkonen/gbmt-splits/blob/main/gbmtsplits/split.py
-    implementation of the tricario et al split
+    implementation of the tricarico et al split
 
     binning_approach: see `_task_vs_clusters_df`/`_pseudo_tasks_long`. Pass
     "gbmt_splits" to reproduce gbmt-splits' approach.
@@ -370,13 +381,13 @@ def globally_balanced_split_polars(
         cluster_col=cluster_col,
         n_bins_for_regression=n_bins_for_regression,
         binning_approach=binning_approach,
-    ).to_numpy()
+    )
 
-    # the column that is the explicit cluster numbers
-    clusters = clusters_vs_tasks_df[:, 0]
+    # keep as a polars Series to maintain dtype: they have to stay joinable against df[cluster_col]
+    clusters = clusters_vs_tasks_df.get_column(cluster_col)
 
     # the array that the next code requires, with tasks as rows and clusters as cols
-    task_vs_clusters_array = clusters_vs_tasks_df[:, 1:].T
+    task_vs_clusters_array = clusters_vs_tasks_df.drop(cluster_col).to_numpy().T
 
     split_assignments = _balance_splits_from_tasks_vs_clusters_array(
         task_vs_clusters_array,
@@ -389,16 +400,21 @@ def globally_balanced_split_polars(
 def sklearn_split(
     X: NDArray,
     y: NDArray,
-    group_on: NDArray,
+    group_on: NDArray | None,
     random_state: int,
     n_splits: int = 5,
     n_bins_for_regression: int | None = 5,
-) -> tuple[np.ndarray, np.ndarray]:
-    """returns jnp.ndarray of shape group_on.shape[0], n_splits"""
-    splitter = StratifiedGroupKFold(
-        n_splits=n_splits, shuffle=True, random_state=random_state
+) -> np.ndarray:
+    """Split index (0..n_splits-1) per row of X.
+
+    `group_on=None` splits rows independently (`StratifiedKFold`); otherwise no
+    group is allowed to span two splits (`StratifiedGroupKFold`).
+    """
+    splitter_cls = StratifiedKFold if group_on is None else StratifiedGroupKFold
+    splitter = splitter_cls(n_splits=n_splits, shuffle=True, random_state=random_state)
+    assert group_on is None or isinstance(group_on, np.ndarray), (
+        "group_on must be a np.ndarray or None"
     )
-    assert isinstance(group_on, np.ndarray), "group_on must be a np.ndarray"
     assert isinstance(X, np.ndarray), "X must be a np.ndarray"
     assert isinstance(y, np.ndarray), "y must be a np.ndarray"
 
@@ -413,64 +429,86 @@ def sklearn_split(
             np.quantile(y, np.linspace(0, 1, n_bins + 1))[1:-1], y, side="right"
         )
 
-    split_idx = np.zeros((X.shape[0], n_splits))
-    for k, (train_idx, test_idx) in enumerate(
-        splitter.split(
-            X=X,
-            y=y,
-            groups=group_on,
-        )
-    ):
-        split_idx[test_idx, k] = 1
-    # assert only one column per row is 1
-    assert np.all(split_idx.sum(axis=1) == 1), RuntimeError(
-        "Each row should be assigned to only one test split"
-    )
-    # now squish them by assigning np.nan to the 0s, and the column number to the 1s
-    split_idx = np.argmax(split_idx, axis=1)
-    return group_on, split_idx
+    split_idx = np.full(X.shape[0], -1)
+    for k, (_, test_idx) in enumerate(splitter.split(X=X, y=y, groups=group_on)):
+        split_idx[test_idx] = k
+    assert (split_idx >= 0).all(), "every row must be assigned a fold"
+    return split_idx
 
 
 def split(
-    df,
-    X_col: str,
+    df: pl.DataFrame,
     y_cols: Sequence[str] | str,
-    cluster_col: str,
     n_splits: int,
-    method: Literal["tricario", "sklearn"],
+    method: Literal["tricarico", "sklearn"],
+    cluster_col: str | None = None,
+    split_col: str = "split",
     **kwargs,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Route to tricario (multi-task LP balancing) or sklearn (StratifiedGroupKFold).
+) -> pl.DataFrame:
+    """Return `df` with `split_col` added, holding 0..n_splits-1 per row.
 
-    Returns: (cluster_ids, split_assignment_per_cluster) where split_assignment is 0..n_splits-1."""
+    Route to tricarico (multi-task LP balancing) or sklearn (StratifiedGroupKFold).
+
+    `cluster_col` names a pre-computed cluster column (see `nanoom.cluster`); no
+    cluster is allowed to span two splits. Pass `cluster_col=None` to split rows
+    directly, with no leakage constraint. Equivalent of clustersize=1 (i.e. each row becomes its own cluster).
+
+    The cluster column stays in the frame, so the per-cluster assignment is
+    `out.group_by(cluster_col).agg(pl.col(split_col).first())`.
+    """
+    if split_col in df.columns:
+        # on the tricarico path this would join to `split_right` and leave the stale
+        # column in place, so the caller reads back the wrong assignment
+        raise ValueError(
+            f"df already has a {split_col!r} column; pass `split_col=` to name the "
+            "output column something else"
+        )
+    grouped = cluster_col is not None
+    if grouped:
+        if cluster_col not in df.columns:
+            raise ValueError(f"cluster_col {cluster_col!r} not in df: {df.columns}")
+    else:
+        cluster_col = "cluster"
+        if cluster_col in df.columns:
+            raise ValueError(
+                "cluster_col=None adds a 'cluster' column of row indices, but df "
+                "already has one. Pass `cluster_col='cluster'` to split on it, or "
+                "rename it."
+            )  # @TODO: fix to have a temporary column
+        df = df.with_columns(pl.int_range(pl.len()).alias(cluster_col))
+
     match method:
-        case "tricario":
-            return globally_balanced_split_polars(
+        case "tricarico":
+            clusters, split_assignments = globally_balanced_split_polars(
                 df=df,
                 split_sizes=[1 / n_splits] * n_splits,
                 y_cols=y_cols,
                 cluster_col=cluster_col,
                 **kwargs,
             )
+            # broadcast the per-cluster assignment back onto rows
+            mapping = pl.DataFrame(
+                {cluster_col: clusters, split_col: split_assignments}
+            )
+            return df.join(mapping, on=cluster_col, how="left", maintain_order="left")
         case "sklearn":
             y_data = df.lazy().select(y_cols).collect()
             if y_data.width > 1:
-                raise ValueError(f"sklearn_split supports only 1 task column, got {y_data.width}")
-            X = (
-                df.select(X_col)
-                .fill_null(strategy="forward")
-                .lazy()
-                .collect()[X_col]
-                .to_numpy()
-            )
-            group_on = df.select(cluster_col).lazy().collect().to_numpy().squeeze()
-            if not "random_state" in kwargs:
+                raise ValueError(
+                    f"sklearn_split supports only 1 task column, got {y_data.width}"
+                )
+            group_on = df.get_column(cluster_col).to_numpy() if grouped else None
+            if "random_state" not in kwargs:
                 kwargs["random_state"] = 0
-            return sklearn_split(
-                X=X,
+            split_idx = sklearn_split(
+                # sklearn's splitters only read X's row count, never its values
+                X=np.zeros((df.height, 1)),
                 y=y_data.to_numpy()[:, 0],
                 group_on=group_on,
                 n_splits=n_splits,
                 **kwargs,
             )
-    raise NotImplementedError("general split function not yet implemented")
+            return df.with_columns(
+                pl.Series(split_col, split_idx)
+            )  # @TODO: check if laziness ensures same order
+    raise NotImplementedError(f"unknown split method: {method}")

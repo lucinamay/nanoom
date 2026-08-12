@@ -1,13 +1,13 @@
 """Correctness tests for nanoom.splitting: type detection, cross-tab
-construction, leakage-safety, and balance quality of the tricario (linear programming) and
-sklearn split methods & tricario/luukonen parity check.
+construction, leakage-safety, and balance quality of the tricarico (linear programming) and
+sklearn split methods & tricarico/luukkonen parity check.
 """
 
 import numpy as np
 import polars as pl
 import pytest
 
-from nanoom.eval import check_no_group_overlap
+from nanoom.eval import check_no_group_overlap, split_y_means
 from nanoom.splitting import (
     _task_type,
     _task_vs_clusters_df,
@@ -182,9 +182,9 @@ def test_globally_balanced_split_no_leakage_single_task(mixed_df):
         cluster_col="cluster",
         **SOLVE_KWARGS,
     )
-    assert len(set(clusters.tolist())) == len(clusters)  # no cluster appears twice
+    assert len(set(clusters.to_list())) == len(clusters)  # no cluster appears twice
     row_cluster = mixed_df["cluster"].to_numpy()
-    mapping = dict(zip(clusters.tolist(), assignments.tolist()))
+    mapping = dict(zip(clusters.to_list(), assignments.tolist()))
     row_split = np.array([mapping[c] for c in row_cluster])
     check_no_group_overlap(row_cluster, row_split)
 
@@ -197,9 +197,9 @@ def test_globally_balanced_split_no_leakage_mixed_tasks(mixed_df):
         cluster_col="cluster",
         **SOLVE_KWARGS,
     )
-    assert len(set(clusters.tolist())) == len(clusters)
+    assert len(set(clusters.to_list())) == len(clusters)
     row_cluster = mixed_df["cluster"].to_numpy()
-    mapping = dict(zip(clusters.tolist(), assignments.tolist()))
+    mapping = dict(zip(clusters.to_list(), assignments.tolist()))
     row_split = np.array([mapping[c] for c in row_cluster])
     check_no_group_overlap(row_cluster, row_split)
 
@@ -234,7 +234,7 @@ def test_globally_balanced_split_balances_task_distribution():
         cluster_col="cluster",
         **SOLVE_KWARGS,
     )
-    mapping = dict(zip(clusters.tolist(), assignments.tolist()))
+    mapping = dict(zip(clusters.to_list(), assignments.tolist()))
     split_of_row = np.array([mapping[c] for c in cluster])
     class1_frac_per_split = [
         (cls[split_of_row == s] == 1).mean() for s in sorted(set(assignments.tolist()))
@@ -245,39 +245,125 @@ def test_globally_balanced_split_balances_task_distribution():
 # --- dispatcher + guards ---
 
 
-def test_split_dispatch_tricario(mixed_df):
-    clusters, assignments = split(
+def test_split_dispatch_tricarico(mixed_df):
+    out = split(
         mixed_df,
-        X_col="x",
         y_cols=["reg"],
         cluster_col="cluster",
         n_splits=3,
-        method="tricario",
+        method="tricarico",
         **SOLVE_KWARGS,
     )
-    assert len(clusters) == 10
-    assert set(assignments.tolist()) <= {0, 1, 2}
+    assert out.height == mixed_df.height
+    assert set(out["split"].to_list()) <= {0, 1, 2}
 
 
 def test_split_dispatch_sklearn(mixed_df):
-    group_on, split_idx = split(
+    out = split(
         mixed_df,
-        X_col="x",
         y_cols="reg",
         cluster_col="cluster",
         n_splits=3,
         method="sklearn",
         random_state=0,
     )
-    check_no_group_overlap(group_on, split_idx)
+    check_no_group_overlap(out["cluster"], out["split"])
+
+
+@pytest.mark.parametrize(
+    "method,kwargs",
+    [("tricarico", SOLVE_KWARGS), ("sklearn", {"random_state": 0})],
+)
+def test_split_returns_row_aligned_for_both_methods(mixed_df, method, kwargs):
+    """Same contract for both: one split per row, in the frame, auditable by nanoom.eval."""
+    out = split(
+        mixed_df,
+        y_cols="reg",
+        cluster_col="cluster",
+        n_splits=3,
+        method=method,
+        **kwargs,
+    )
+    assert out.height == mixed_df.height
+    assert out["split"].null_count() == 0
+    assert set(out["split"].to_list()) == {0, 1, 2}
+    check_no_group_overlap(out["cluster"], out["split"])
+
+    got = split_y_means(out["reg"], out["split"])
+    expected = [
+        out.filter(pl.col("split") == s)["reg"].mean()
+        for s in sorted(set(out["split"]))
+    ]
+    assert np.allclose(got, expected)
+    # rows survive the join in their original order
+    assert out["reg"].to_list() == mixed_df["reg"].to_list()
+
+
+@pytest.mark.parametrize(
+    "method,kwargs",
+    [("tricarico", SOLVE_KWARGS), ("sklearn", {"random_state": 0})],
+)
+def test_split_without_clusters(method, kwargs):
+    df = _clustered_df(n_clusters=4, per_cluster=5).drop("cluster")
+    out = split(df, y_cols="reg", n_splits=2, method=method, **kwargs)
+    assert out.height == df.height
+    # a row-index cluster column is added so grouping/eval work in both modes
+    assert out["cluster"].to_list() == list(range(df.height))
+    assert set(out["split"].to_list()) == {0, 1}
+    check_no_group_overlap(out["cluster"].to_numpy(), out["split"].to_numpy())
+
+
+def test_tricarico_row_mode_matches_singleton_clusters():
+    """cluster_col=None is exactly 'one cluster per row', not a separate algorithm."""
+    df = _clustered_df(n_clusters=4, per_cluster=3).drop("cluster")
+    implicit = split(df, y_cols="reg", n_splits=2, method="tricarico", **SOLVE_KWARGS)
+    explicit = split(
+        df.with_columns(pl.int_range(pl.len()).alias("row_id")),
+        y_cols="reg",
+        cluster_col="row_id",
+        n_splits=2,
+        method="tricarico",
+        **SOLVE_KWARGS,
+    )
+    assert implicit["split"].to_list() == explicit["split"].to_list()
+
+
+def test_split_preserves_row_order_with_unsorted_clusters():
+    """The tricarico path joins a per-cluster mapping back onto rows."""
+    df = pl.DataFrame(
+        {
+            "cluster": ["c", "a", "c", "b", "a", "b"],
+            "reg": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+        }
+    )
+    out = split(
+        df,
+        y_cols="reg",
+        cluster_col="cluster",
+        n_splits=2,
+        method="tricarico",
+        **SOLVE_KWARGS,
+    )
+    assert out["cluster"].to_list() == df["cluster"].to_list()
+    assert out["reg"].to_list() == df["reg"].to_list()
+    # string cluster ids must survive the round-trip through the LP mapping
+    assert out["split"].null_count() == 0
 
 
 def test_sklearn_split_no_group_leakage(mixed_df):
     X = mixed_df["x"].to_numpy()
     y = mixed_df["reg"].to_numpy()
     group_on = mixed_df["cluster"].to_numpy()
-    _, split_idx = sklearn_split(X, y, group_on, random_state=0, n_splits=3)
+    split_idx = sklearn_split(X, y, group_on, random_state=0, n_splits=3)
     check_no_group_overlap(group_on, split_idx)
+
+
+def test_sklearn_split_without_groups(mixed_df):
+    X = mixed_df["x"].to_numpy()
+    y = mixed_df["reg"].to_numpy()
+    split_idx = sklearn_split(X, y, None, random_state=0, n_splits=3)
+    assert len(split_idx) == mixed_df.height
+    assert set(split_idx.tolist()) == {0, 1, 2}
 
 
 def test_split_sizes_larger_than_clusters_raises(mixed_df):
@@ -291,11 +377,28 @@ def test_split_sizes_larger_than_clusters_raises(mixed_df):
         )
 
 
+def test_split_raises_rather_than_overwriting_existing_columns(mixed_df):
+    with pytest.raises(ValueError, match="already has a 'split' column"):
+        split(
+            mixed_df.with_columns(pl.lit(0).alias("split")),
+            y_cols="reg",
+            cluster_col="cluster",
+            n_splits=3,
+            method="sklearn",
+        )
+    with pytest.raises(ValueError, match="already has one"):
+        split(mixed_df, y_cols="reg", n_splits=3, method="sklearn")
+
+
+def test_split_raises_on_missing_cluster_col(mixed_df):
+    with pytest.raises(ValueError, match="not in df"):
+        split(mixed_df, y_cols="reg", cluster_col="nope", n_splits=3, method="sklearn")
+
+
 def test_split_unknown_method_raises(mixed_df):
     with pytest.raises(NotImplementedError):
         split(
             mixed_df,
-            X_col="x",
             y_cols=["reg"],
             cluster_col="cluster",
             n_splits=3,
@@ -324,7 +427,7 @@ def test_single_oversized_cluster_does_not_crash():
     )
     assert len(clusters) == n_clusters
     row_cluster = df["cluster"].to_numpy()
-    mapping = dict(zip(clusters.tolist(), assignments.tolist()))
+    mapping = dict(zip(clusters.to_list(), assignments.tolist()))
     row_split = np.array([mapping[c] for c in row_cluster])
     check_no_group_overlap(row_cluster, row_split)  # leakage safety still holds
 
@@ -332,7 +435,7 @@ def test_single_oversized_cluster_does_not_crash():
 # --- equivalence with the real upstream gbmtsplits package ---
 
 
-def test_tricario_matches_gbmtsplits_reference():
+def test_tricarico_matches_gbmtsplits_reference():
     pytest.importorskip("gbmtsplits")
     import pandas as pd
     from gbmtsplits.split import GloballyBalancedSplit
@@ -365,7 +468,7 @@ def test_tricario_matches_gbmtsplits_reference():
         n_jobs=1,
         time_limit_seconds=45,
     )
-    nanoom_mapping = dict(zip(nanoom_clusters.tolist(), nanoom_assign.tolist()))
+    nanoom_mapping = dict(zip(nanoom_clusters.to_list(), nanoom_assign.tolist()))
 
     splitter = GloballyBalancedSplit(
         sizes=sizes,
