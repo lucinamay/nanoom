@@ -8,6 +8,7 @@ app = marimo.App(width="medium", auto_download=["html"])
 def _():
     import marimo as mo
     import polars as pl
+
     return mo, pl
 
 
@@ -99,10 +100,8 @@ def _(mo):
 
 @app.cell
 def _(pcm_data, pl):
-    binned_pcm = (
-        pcm_data.with_columns(
-            y_binned=pl.col("y").qcut(5, labels=[f"bin_{i}" for i in range(5)])
-        )
+    binned_pcm = pcm_data.with_columns(
+        y_binned=pl.col("y").qcut(5, labels=[f"bin_{i}" for i in range(5)])
     )
     binned_pcm
     return (binned_pcm,)
@@ -112,8 +111,8 @@ def _(pcm_data, pl):
 def _(binned_pcm, pl):
     # visual check
     binned_pcm.pivot(
-            index="datapoint", on="y_binned", values="y", aggregate_function="len"
-        ).cast({pl.UInt32: pl.Boolean})  # boolean for visualisation
+        index="datapoint", on="y_binned", values="y", aggregate_function="len"
+    ).cast({pl.UInt32: pl.Boolean})  # boolean for visualisation
     return
 
 
@@ -136,9 +135,7 @@ def _(df, pl):
         """
 
         if not cols:
-            cols = [
-                name for name, dtype in df.select(pl.col(pl.List)).collect_schema()
-            ]
+            cols = [name for name, dtype in df.select(pl.col(pl.List)).collect_schema()]
         max_list_len = pl.max_horizontal(pl.selectors.list().list.len())
         return df.with_columns(
             [
@@ -151,7 +148,6 @@ def _(df, pl):
                 for c in cols
             ]
         )
-
 
     def semicolon_to_flat(
         df: pl.DataFrame | pl.LazyFrame,
@@ -185,7 +181,6 @@ def _(df, pl):
             .with_columns(pl.col("^type_.*$").cast(pl.Int8))
         )
 
-
     def task_readout_per_activity(
         flat_df, readout_fmt: str = "^type_.*$", group_by="activity_id"
     ):
@@ -194,7 +189,6 @@ def _(df, pl):
             .group_by(group_by)
             .agg(pl.col(readout_fmt).sum())
         )
-
 
     import polars.selectors as cs
 
@@ -236,7 +230,6 @@ def _(binned_pcm, pl):
 
 @app.cell
 def _(binned_pcm_cluster, pl):
-
     def tasks_vs_clusters_array_polars(
         df: pl.DataFrame, task_cols: list[str], cluster_col: str
     ):
@@ -260,13 +253,27 @@ def _(binned_pcm_cluster, pl):
         # Get unique clusters sorted for column order
         pass
 
-
     tasks_vs_clusters_array_polars(
         binned_pcm_cluster,
         task_cols=[f"bin_{i}" for i in range(5)],
         cluster_col="cluster",
     )
-    pre_transpose = binned_pcm_cluster.pivot(on="y_binned",index="cluster", values="datapoint",aggregate_function="len",sort_columns=True).join(binned_pcm_cluster.group_by("cluster").agg(pl.len().alias("number")), on="cluster",how="left").sort("cluster").select(pl.col("cluster"),pl.col("number"),pl.exclude("number", "cluster"))
+    pre_transpose = (
+        binned_pcm_cluster.pivot(
+            on="y_binned",
+            index="cluster",
+            values="datapoint",
+            aggregate_function="len",
+            sort_columns=True,
+        )
+        .join(
+            binned_pcm_cluster.group_by("cluster").agg(pl.len().alias("number")),
+            on="cluster",
+            how="left",
+        )
+        .sort("cluster")
+        .select(pl.col("cluster"), pl.col("number"), pl.exclude("number", "cluster"))
+    )
     pre_transpose
     return (pre_transpose,)
 
@@ -274,17 +281,19 @@ def _(binned_pcm_cluster, pl):
 @app.cell
 def _(pre_transpose):
     # from nanoom.splitting import _balance_splits_from_tasks_vs_clusters_array
-    import jax.numpy as jnp
-    arr = jnp.array(pre_transpose.to_numpy())
-    column_vals = arr[:,0]
-    pass_to_opt = arr[:,1:]
-    pass_to_opt.T #-> this is what we pass to the function
+    import numpy as np
+
+    arr = np.array(pre_transpose.to_numpy())
+    column_vals = arr[:, 0]
+    pass_to_opt = arr[:, 1:]
+    pass_to_opt.T  # -> this is what we pass to the function
     return (pass_to_opt,)
 
 
 @app.cell
 def _():
     from nanoom.splitting import _balance_splits_from_tasks_vs_clusters_array
+
     return
 
 
@@ -297,7 +306,7 @@ def _(pass_to_opt):
 
 @app.cell
 def _(input):
-    _balance_splits_from_tasks_vs_clusters_array(input,time_limit_seconds=20)
+    _balance_splits_from_tasks_vs_clusters_array(input, time_limit_seconds=20)
     return
 
 

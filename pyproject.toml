@@ -17,10 +17,6 @@ dependencies = [
 
 
 [project.optional-dependencies]
-jax_cuda13 = [
-    "jax",
-    "jax[cuda13]",
-]
 chem = [
     "rdkit>=2025.3.6",
     "rich>=14.2.0",
@@ -72,5 +68,5 @@ test = [
 Homepage = "https://github.com/lucinamay/nanoom"
 
 [tool.pytest.ini_options]
-addopts = "--doctest-modules --cov=nanoom --cov-report=term-missing"
+addopts = "--doctest-modules --cov=nanoom --cov-report=term-missing --cov-report=xml"
 testpaths = ["tests", "nanoom"]
