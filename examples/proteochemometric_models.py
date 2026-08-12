@@ -273,7 +273,7 @@ def _(binned_pcm_cluster, pl):
 
 @app.cell
 def _(pre_transpose):
-    # from nanoom.splits import _balance_data_from_tasks_vs_clusters_array
+    # from nanoom.splitting import _balance_splits_from_tasks_vs_clusters_array
     import jax.numpy as jnp
     arr = jnp.array(pre_transpose.to_numpy())
     column_vals = arr[:,0]
@@ -284,7 +284,7 @@ def _(pre_transpose):
 
 @app.cell
 def _():
-    from nanoom.splits import _balance_data_from_tasks_vs_clusters_array
+    from nanoom.splitting import _balance_splits_from_tasks_vs_clusters_array
     return
 
 
@@ -297,7 +297,7 @@ def _(pass_to_opt):
 
 @app.cell
 def _(input):
-    _balance_data_from_tasks_vs_clusters_array(input,time_limit_seconds=20)
+    _balance_splits_from_tasks_vs_clusters_array(input,time_limit_seconds=20)
     return
 
 
