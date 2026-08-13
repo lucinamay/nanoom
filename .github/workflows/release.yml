@@ -32,12 +32,21 @@ jobs:
           name: dist
           path: dist/
 
+  versions:
+    runs-on: ubuntu-latest
+    outputs:
+      python-versions: ${{ steps.read.outputs.versions }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: read
+        run: echo "versions=$(jq -c .versions .github/python-versions.json)" >> "$GITHUB_OUTPUT"
+
   smoke-test:
-    needs: build
+    needs: [build, versions]
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ${{ fromJson(readFile('.github/python-versions.json')).versions }}
+        python-version: ${{ fromJson(needs.versions.outputs.python-versions) }}
     steps:
       - name: Download distributions
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
