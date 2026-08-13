@@ -74,7 +74,7 @@ def test_task_type_string_classification():
 # --- _task_vs_clusters_df ---
 
 
-def test_task_vs_clusters_df_single_regression_task(mixed_df):
+def test_task_vs_clusters_df_single_regression_task(mixed_df: pl.DataFrame):
     out = _task_vs_clusters_df(
         mixed_df, task_cols=["reg"], cluster_col="cluster", n_bins_for_regression=5
     )
@@ -85,7 +85,7 @@ def test_task_vs_clusters_df_single_regression_task(mixed_df):
     assert (out.select(pseudo_cols).sum_horizontal() == out["number"]).all()
 
 
-def test_task_vs_clusters_df_single_classification_task(mixed_df):
+def test_task_vs_clusters_df_single_classification_task(mixed_df: pl.DataFrame):
     out = _task_vs_clusters_df(mixed_df, task_cols=["cls"], cluster_col="cluster")
     expected = {f"cls_{c}" for c in mixed_df["cls"].unique().to_list()}
     pseudo_cols = {c for c in out.columns if c not in ("cluster", "number")}
@@ -100,7 +100,9 @@ def test_task_vs_clusters_df_single_classification_task(mixed_df):
         assert got == row["len"]
 
 
-def test_task_vs_clusters_df_mixed_regression_and_classification(mixed_df):
+def test_task_vs_clusters_df_mixed_regression_and_classification(
+    mixed_df: pl.DataFrame,
+):
     # headline new capability: previously raised NotImplementedError
     out = _task_vs_clusters_df(
         mixed_df, task_cols=["reg", "cls"], cluster_col="cluster"
@@ -133,7 +135,7 @@ def test_task_vs_clusters_df_mixed_all_three_types():
     assert any(c.startswith("Contineous_bin") for c in cols)
 
 
-def test_task_vs_clusters_df_preserves_cluster_col(mixed_df):
+def test_task_vs_clusters_df_preserves_cluster_col(mixed_df: pl.DataFrame):
     # regression test: the old classification_onehot branch silently dropped
     # cluster_col during unpivot when it wasn't also x_col
     out = _task_vs_clusters_df(mixed_df, task_cols=["cls"], cluster_col="cluster")
@@ -174,7 +176,7 @@ def test_task_vs_clusters_df_regression_bins_row_count_balance():
 # --- leakage + balance ---
 
 
-def test_globally_balanced_split_no_leakage_single_task(mixed_df):
+def test_globally_balanced_split_no_leakage_single_task(mixed_df: pl.DataFrame):
     clusters, assignments = globally_balanced_split_polars(
         mixed_df,
         split_sizes=[0.34, 0.33, 0.33],
@@ -183,13 +185,15 @@ def test_globally_balanced_split_no_leakage_single_task(mixed_df):
         **SOLVE_KWARGS,
     )
     assert len(set(clusters.to_list())) == len(clusters)  # no cluster appears twice
-    row_cluster = mixed_df["cluster"].to_numpy()
+    row_cluster = mixed_df.get_column("cluster").to_numpy()
     mapping = dict(zip(clusters.to_list(), assignments.tolist()))
     row_split = np.array([mapping[c] for c in row_cluster])
-    check_no_group_overlap(row_cluster, row_split)
+    check_no_group_overlap(
+        row_cluster, row_split
+    )  # @TODO: implement as true test (not own function)
 
 
-def test_globally_balanced_split_no_leakage_mixed_tasks(mixed_df):
+def test_globally_balanced_split_no_leakage_mixed_tasks(mixed_df: pl.DataFrame):
     clusters, assignments = globally_balanced_split_polars(
         mixed_df,
         split_sizes=[0.34, 0.33, 0.33],
@@ -204,7 +208,7 @@ def test_globally_balanced_split_no_leakage_mixed_tasks(mixed_df):
     check_no_group_overlap(row_cluster, row_split)
 
 
-def test_globally_balanced_split_balances_split_sizes(mixed_df):
+def test_globally_balanced_split_balances_split_sizes(mixed_df: pl.DataFrame):
     clusters, assignments = globally_balanced_split_polars(
         mixed_df,
         split_sizes=[0.5, 0.5],
@@ -245,7 +249,7 @@ def test_globally_balanced_split_balances_task_distribution():
 # --- dispatcher + guards ---
 
 
-def test_split_dispatch_tricarico(mixed_df):
+def test_split_dispatch_tricarico(mixed_df: pl.DataFrame):
     out = split(
         mixed_df,
         y_cols=["reg"],
@@ -258,7 +262,7 @@ def test_split_dispatch_tricarico(mixed_df):
     assert set(out["split"].to_list()) <= {0, 1, 2}
 
 
-def test_split_dispatch_sklearn(mixed_df):
+def test_split_dispatch_sklearn(mixed_df: pl.DataFrame):
     out = split(
         mixed_df,
         y_cols="reg",
@@ -350,7 +354,7 @@ def test_split_preserves_row_order_with_unsorted_clusters():
     assert out["split"].null_count() == 0
 
 
-def test_sklearn_split_no_group_leakage(mixed_df):
+def test_sklearn_split_no_group_leakage(mixed_df: pl.DataFrame):
     X = mixed_df["x"].to_numpy()
     y = mixed_df["reg"].to_numpy()
     group_on = mixed_df["cluster"].to_numpy()
@@ -358,7 +362,7 @@ def test_sklearn_split_no_group_leakage(mixed_df):
     check_no_group_overlap(group_on, split_idx)
 
 
-def test_sklearn_split_without_groups(mixed_df):
+def test_sklearn_split_without_groups(mixed_df: pl.DataFrame):
     X = mixed_df["x"].to_numpy()
     y = mixed_df["reg"].to_numpy()
     split_idx = sklearn_split(X, y, None, random_state=0, n_splits=3)
@@ -366,7 +370,7 @@ def test_sklearn_split_without_groups(mixed_df):
     assert set(split_idx.tolist()) == {0, 1, 2}
 
 
-def test_split_sizes_larger_than_clusters_raises(mixed_df):
+def test_split_sizes_larger_than_clusters_raises(mixed_df: pl.DataFrame):
     with pytest.raises(ValueError):
         globally_balanced_split_polars(
             mixed_df,
@@ -377,7 +381,7 @@ def test_split_sizes_larger_than_clusters_raises(mixed_df):
         )
 
 
-def test_split_raises_rather_than_overwriting_existing_columns(mixed_df):
+def test_split_raises_rather_than_overwriting_existing_columns(mixed_df: pl.DataFrame):
     with pytest.raises(ValueError, match="already has a 'split' column"):
         split(
             mixed_df.with_columns(pl.lit(0).alias("split")),
@@ -390,12 +394,12 @@ def test_split_raises_rather_than_overwriting_existing_columns(mixed_df):
         split(mixed_df, y_cols="reg", n_splits=3, method="sklearn")
 
 
-def test_split_raises_on_missing_cluster_col(mixed_df):
+def test_split_raises_on_missing_cluster_col(mixed_df: pl.DataFrame):
     with pytest.raises(ValueError, match="not in df"):
         split(mixed_df, y_cols="reg", cluster_col="nope", n_splits=3, method="sklearn")
 
 
-def test_split_unknown_method_raises(mixed_df):
+def test_split_unknown_method_raises(mixed_df: pl.DataFrame):
     with pytest.raises(NotImplementedError):
         split(
             mixed_df,
