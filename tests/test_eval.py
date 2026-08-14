@@ -2,6 +2,8 @@
 balance checks, inter/intra-split distance stats).
 """
 
+from collections.abc import Callable
+
 import numpy as np
 import pytest
 
@@ -50,7 +52,9 @@ def test_split_y_means_values():
         (ev.min_distances_splits, (np.zeros((60, 3)), np.zeros(12, dtype=int))),
     ],
 )
-def test_eval_raises_on_length_mismatch(fn, args):
+def test_eval_raises_on_length_mismatch(
+    fn: Callable[..., object], args: tuple[np.ndarray, ...]
+):
     kwargs = {"metric": "euclidean"} if fn is ev.min_distances_splits else {}
     with pytest.raises(ValueError, match="must be per-row and aligned"):
         fn(*args, **kwargs)

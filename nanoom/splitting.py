@@ -17,6 +17,9 @@ lg = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="[%(name)s] %(message)s")
 
 
+SplitMethod = Literal["tricarico", "sklearn"]
+
+
 def _task_type(
     series: pl.Series,
 ) -> Literal["regression", "classification", "string_classification"]:
@@ -440,7 +443,7 @@ def split(
     df: pl.DataFrame,
     y_cols: Sequence[str] | str,
     n_splits: int,
-    method: Literal["tricarico", "sklearn"],
+    method: SplitMethod,
     cluster_col: str | None = None,
     split_col: str = "split",
     **kwargs,

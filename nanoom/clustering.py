@@ -7,7 +7,19 @@ import numpy as np
 from sklearn.cluster import DBSCAN, HDBSCAN, KMeans
 from sklearn.metrics import silhouette_score as sk_silhouette
 
-BIT_CLUSTERING_METHODS = {
+ClusteringMethod = Literal[
+    "kmeans",
+    "dbscan",
+    "hdbscan",
+    "sphere_exclusion",
+    "bitbirch",
+    "maxmin",
+    "leader_picker",
+    "hash_dummy",
+    "random",
+]
+
+BIT_CLUSTERING_METHODS: set[ClusteringMethod] = {
     "sphere_exclusion",
     "bitbirch",
     "maxmin",
@@ -45,17 +57,7 @@ def dummy_hash_clustering(
 
 def cluster(
     descriptors: np.ndarray,
-    method: Literal[
-        "kmeans",
-        "dbscan",
-        "hdbscan",
-        "sphere_exclusion",
-        "bitbirch",
-        "maxmin",
-        "leader_picker",
-        "hash_dummy",
-        "random",
-    ],
+    method: ClusteringMethod,
     *args,
     **kwargs,
 ) -> np.ndarray:
@@ -165,4 +167,4 @@ def evaluate(
     method: Literal["silhouette", "inertia", "calinski-harabasz", "davies-bouldin"],
     **kwargs,
 ):
-    pass
+    raise NotImplementedError
