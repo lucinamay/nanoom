@@ -31,6 +31,10 @@ def random_clustering(
     )
 
 
+def _is_binary_descriptor(array: np.ndarray) -> bool:
+    return np.array_equal(array, array.astype(bool))
+
+
 def dummy_hash_clustering(
     descriptors: np.ndarray, n_clusters: int | None = None
 ) -> np.ndarray:
@@ -82,10 +86,18 @@ def cluster(
             f"Interpreting n_clusters={n_clusters} as fraction, setting n_clusters to {kwargs['n_clusters']}"
         )
 
+    if method in BIT_CLUSTERING_METHODS and not _is_binary_descriptor(descriptors):
+        raise ValueError(
+            f"{method} requires binary descriptors, got dtype {descriptors.dtype} with"
+            + " non-binary values. Pass descriptors.astype(bool) if you want to binarize"
+        )
+
     match method:
         case "kmeans":
             return KMeans(*args, **kwargs).fit(descriptors).labels_
         case "dbscan":
+            if "metric" not in kwargs and _is_binary_descriptor(descriptors):
+                kwargs["metric"] = "jaccard"
             if kwargs.get("metric", None) == "jaccard":
                 descriptors = descriptors.astype(bool)  # prevent warning
             return DBSCAN(*args, **kwargs).fit(descriptors).labels_

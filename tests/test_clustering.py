@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 
 from nanoom.clustering import (
+    BIT_CLUSTERING_METHODS,
     _auto_n_clusters,
     _silhouette_score,
     cluster,
@@ -139,11 +140,36 @@ def test_silhouette_score_large_dataset():
 
 
 # --- Tests for BIT Clustering Methods (Mocked) ---
-def test_cluster_bitbirch(sample_descriptors):
-    clusters = cluster(sample_descriptors, method="bitbirch")
-    assert len(clusters) == len(sample_descriptors)
+def test_cluster_bitbirch(sample_bit_descriptors):
+    clusters = cluster(sample_bit_descriptors, method="bitbirch")
+    assert len(clusters) == len(sample_bit_descriptors)
+    assert len(np.unique(clusters)) > 1
 
 
-def test_cluster_sphere_exclusion(sample_descriptors):
-    clusters = cluster(sample_descriptors, method="sphere_exclusion")
-    assert len(clusters) == len(sample_descriptors)
+def test_cluster_sphere_exclusion(sample_bit_descriptors):
+    clusters = cluster(sample_bit_descriptors, method="sphere_exclusion")
+    assert len(clusters) == len(sample_bit_descriptors)
+
+
+@pytest.mark.parametrize("method", sorted(BIT_CLUSTERING_METHODS))
+@pytest.mark.parametrize(
+    "descriptors",
+    [
+        np.random.default_rng(42).random((20, 10)),  # floats
+        np.random.default_rng(42).integers(0, 5, (20, 10)),  # counts
+        np.packbits(
+            np.random.default_rng(42).integers(0, 2, (20, 64), dtype=np.uint8), axis=1
+        ),  # packed fingerprints (8bit->1byte(0-255)),
+    ],
+    ids=["floats", "counts", "packed"],
+)
+def test_bit_clustering_rejects_non_binary(descriptors, method):
+    with pytest.raises(ValueError, match="binary descriptors"):
+        cluster(descriptors, method=method)
+
+
+@pytest.mark.parametrize("method", sorted(BIT_CLUSTERING_METHODS))
+@pytest.mark.parametrize("dtype", [bool, np.uint8, np.int64, np.float64], ids=str)
+def test_bit_clustering_accepts_binary(sample_bit_descriptors, method, dtype):
+    clusters = cluster(sample_bit_descriptors.astype(dtype), method=method)
+    assert len(clusters) == len(sample_bit_descriptors)
