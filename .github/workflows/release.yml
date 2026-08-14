@@ -66,10 +66,10 @@ jobs:
           enable-cache: false
 
       - name: Smoke test (wheel)
-        run: uv run --isolated --no-project --with dist/*.whl --with pytest pytest tests/smoke_test.py
+        run: uv run --isolated --no-project --with dist/*.whl --with pytest pytest -o addopts="" tests/smoke_test.py
 
       - name: Smoke test (source distribution)
-        run: uv run --isolated --no-project --with dist/*.tar.gz --with pytest pytest tests/smoke_test.py
+        run: uv run --isolated --no-project --with dist/*.tar.gz --with pytest pytest -o addopts="" tests/smoke_test.py
 
   publish:
     needs: smoke-test
