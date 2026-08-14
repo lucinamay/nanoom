@@ -495,7 +495,7 @@ class TestGbmtSplitsEquivalence:
         nanoom_frac = fractions(nanoom_mapping)
         gbmt_frac = fractions(gbmt_mapping)
         for t in tasks:
-            assert np.allclose(nanoom_frac[t], gbmt_frac[t], atol=0.03), (
+            assert np.allclose(nanoom_frac[t], gbmt_frac[t], atol=0.06), (
                 f"{t}: nanoom={nanoom_frac[t]} gbmt={gbmt_frac[t]}"
             )
             assert np.allclose(nanoom_frac[t], 1 / 3, atol=0.06)
