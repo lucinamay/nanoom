@@ -22,7 +22,7 @@ def sample_descriptors() -> np.ndarray:
 @pytest.fixture
 def sample_bit_descriptors() -> np.ndarray:
     np.random.seed(42)
-    return np.random.randint(0, 2, (100, 10)).astype(bool)
+    return np.random.randint(0, 2, (100, 10)).astype(bool).astype(int)
 
 
 @pytest.fixture
