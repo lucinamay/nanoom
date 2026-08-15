@@ -3,12 +3,15 @@ construction, leakage-safety, and balance quality of the tricarico (linear progr
 sklearn split methods & tricarico/luukkonen parity check.
 """
 
+from typing import TypedDict
+
 import numpy as np
 import polars as pl
 import pytest
 
 from nanoom.eval import check_no_group_overlap, split_y_means
 from nanoom.splitting import (
+    SplitMethod,
     _task_type,
     _task_vs_clusters_df,
     globally_balanced_split_polars,
@@ -16,14 +19,25 @@ from nanoom.splitting import (
     split,
 )
 
+
 # ILP calls in these tests use n_jobs=1 for solver determinism, and small
 # cluster counts so CBC reaches the exact (relative_gap=0) optimum quickly:
 # proving *exact* optimality on a larger/harder instance can take CBC a long
 # time even though a near-optimal solution is found almost instantly.
-SOLVE_KWARGS = dict(n_jobs=1, time_limit_seconds=20)
+class SplitKwargs(TypedDict, total=False):
+    """Every extra kwarg the two split methods take, so `**` unpacking stays typed."""
+
+    n_jobs: int
+    time_limit_seconds: int
+    random_state: int
 
 
-def _clustered_df(n_clusters=10, per_cluster=8, seed=0):
+SOLVE_KWARGS: SplitKwargs = {"n_jobs": 1, "time_limit_seconds": 20}
+
+
+def _clustered_df(
+    n_clusters: int = 10, per_cluster: int = 8, seed: int = 0
+) -> pl.DataFrame:
     rng = np.random.default_rng(seed)
     n = n_clusters * per_cluster
     cluster = np.repeat(np.arange(n_clusters), per_cluster)
@@ -39,7 +53,7 @@ def _clustered_df(n_clusters=10, per_cluster=8, seed=0):
 
 
 @pytest.fixture
-def mixed_df():
+def mixed_df() -> pl.DataFrame:
     return _clustered_df()
 
 
@@ -307,7 +321,9 @@ class TestSplitDispatcher:
         "method,kwargs",
         [("tricarico", SOLVE_KWARGS), ("sklearn", {"random_state": 0})],
     )
-    def test_returns_row_aligned_for_both_methods(self, mixed_df, method, kwargs):
+    def test_returns_row_aligned_for_both_methods(
+        self, mixed_df: pl.DataFrame, method: SplitMethod, kwargs: SplitKwargs
+    ):
         """Same contract for both: one split per row, in the frame, auditable by nanoom.eval."""
         out = split(
             mixed_df,
@@ -335,7 +351,7 @@ class TestSplitDispatcher:
         "method,kwargs",
         [("tricarico", SOLVE_KWARGS), ("sklearn", {"random_state": 0})],
     )
-    def test_without_clusters(self, method, kwargs):
+    def test_without_clusters(self, method: SplitMethod, kwargs: SplitKwargs):
         df = _clustered_df(n_clusters=4, per_cluster=5).drop("cluster")
         out = split(df, y_cols="reg", n_splits=2, method=method, **kwargs)
         assert out.height == df.height

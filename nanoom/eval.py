@@ -1,6 +1,7 @@
-from typing import Literal
+from typing import Literal, TypedDict
 
 import numpy as np
+import numpy.typing as npt
 
 
 def _numpy_euclidean(a: np.ndarray, b: np.ndarray) -> np.ndarray:
@@ -18,26 +19,40 @@ def _numpy_jaccard(a: np.ndarray, b: np.ndarray) -> np.ndarray:
 
 
 def _same_length_arrays(
-    a, b, a_name: str, b_name: str
+    a: npt.ArrayLike, b: npt.ArrayLike, a_name: str, b_name: str
 ) -> tuple[np.ndarray, np.ndarray]:
     """As numpy arrays (accepts polars Series / lists), raising if lengths differ."""
     a, b = np.asarray(a), np.asarray(b)
     if len(a) != len(b):
         raise ValueError(
             f"{a_name} has length {len(a)} but {b_name} has length {len(b)}; "
-            "both must be per-row and aligned"
+            + "both must be per-row and aligned"
         )
     return a, b
 
 
+class SplitDistances(TypedDict):
+    """Distance stats for one split: `ext_` against all other splits, `int_` within."""
+
+    split: int
+    ext_distance_min: float
+    ext_distance_mean: float
+    ext_distance_median: float
+    ext_distance_std: float
+    int_distance_min: float
+    int_distance_mean: float
+    int_distance_median: float
+    int_distance_std: float
+
+
 def min_distances_splits(
     descriptors: np.ndarray, splits: np.ndarray, metric: Literal["euclidean", "jaccard"]
-) -> list[dict]:
+) -> list[SplitDistances]:
     descriptors, splits = _same_length_arrays(
         descriptors, splits, "descriptors", "splits"
     )
     # loop ovebr the different values in the split
-    results = []
+    results: list[SplitDistances] = []
     match metric:
         case "euclidean":
             distance_function = _numpy_euclidean
@@ -46,26 +61,29 @@ def min_distances_splits(
         case _:
             raise ValueError(f"Unknown metric: {metric}")
     for j in sorted(set(splits)):
-        res = {"split": j}
         split_descriptors = descriptors[np.where(splits == j)[0]]
         other_descriptors = descriptors[np.where(splits != j)[0]]
         distances = distance_function(split_descriptors, other_descriptors)
-        res["ext_distance_min"] = distances.min()
-        res["ext_distance_mean"] = distances.mean()
-        res["ext_distance_median"] = np.median(distances)
-        res["ext_distance_std"] = distances.std()
         intra_distances = distance_function(split_descriptors, split_descriptors)
         # remove diagonal
         intra_distances = intra_distances[~np.eye(intra_distances.shape[0], dtype=bool)]
-        res["int_distance_min"] = intra_distances.min()
-        res["int_distance_mean"] = intra_distances.mean()
-        res["int_distance_median"] = np.median(intra_distances)
-        res["int_distance_std"] = intra_distances.std()
-        results.append(res)
+        results.append(
+            SplitDistances(
+                split=int(j),
+                ext_distance_min=float(distances.min()),
+                ext_distance_mean=float(distances.mean()),
+                ext_distance_median=float(np.median(distances)),
+                ext_distance_std=float(distances.std()),
+                int_distance_min=float(intra_distances.min()),
+                int_distance_mean=float(intra_distances.mean()),
+                int_distance_median=float(np.median(intra_distances)),
+                int_distance_std=float(intra_distances.std()),
+            )
+        )
     return results
 
 
-def split_y_means(y, splits):
+def split_y_means(y: npt.ArrayLike, splits: npt.ArrayLike) -> np.ndarray:
     """Mean of y per split, ordered by sorted split label.
 
     Indexed by position, not by the split label itself: labels are not guaranteed
@@ -78,7 +96,7 @@ def split_y_means(y, splits):
     return means
 
 
-def check_distribution_y_similar(y, splits):
+def check_distribution_y_similar(y: npt.ArrayLike, splits: npt.ArrayLike) -> None:
     means = split_y_means(y, splits)
     overall_mean = np.asarray(y).mean()
     if not np.allclose(means, overall_mean, rtol=0.1):
@@ -87,7 +105,7 @@ def check_distribution_y_similar(y, splits):
         )
 
 
-def check_no_group_overlap(group_by, splits):
+def check_no_group_overlap(group_by: npt.ArrayLike, splits: npt.ArrayLike) -> None:
     group_by, splits = _same_length_arrays(group_by, splits, "group_by", "splits")
     unique_groups = np.unique(group_by)
     group_split_counts = np.array(

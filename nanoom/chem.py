@@ -85,8 +85,7 @@ def _sphere_exclusion(
 def _bitbirch(descriptors: np.ndarray, **kwargs) -> np.ndarray:
     """from https://github.com/mqcomplab/bblean/blob/main/examples/dataset_splitting.ipynb"""
     # bitbirch = bblean.BitBirch(branching_factor=50, threshold=0.65)
-    bitbirch = bblean.BitBirch(**kwargs)
-    bitbirch.fit(descriptors)
+    bitbirch = bblean.BitBirch(**kwargs).fit(descriptors, input_is_packed=False)
     cluster_list = bitbirch.get_cluster_mol_ids()
 
     # Map each mol ID to its cluster ID
