@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nanoom"
-version = "0.1.0a20260814"
+version = "0.1.0a20260815"
 description = "balanced data splitting"
 readme = "README.md"
 requires-python = ">=3.11" # inherent to bblean. code itself is 3.10
