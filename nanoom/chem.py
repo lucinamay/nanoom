@@ -1,5 +1,6 @@
 """rdkit clustering"""
 
+import hashlib
 import logging as lg
 from collections import defaultdict
 from pathlib import Path
@@ -7,8 +8,9 @@ from typing import Sequence
 
 import bblean
 import numpy as np
-from rdkit import DataStructs
+from rdkit import Chem, DataStructs
 from rdkit.DataStructs import ExplicitBitVect
+from rdkit.Chem.Scaffolds import MurckoScaffold
 from rdkit.SimDivFilters import rdSimDivPickers
 from rich.progress import track
 
@@ -154,3 +156,25 @@ def leader_picker_clustering(
         bitvects, len(descriptors), similarity_threshold
     )
     return _dissimilarity_cluster_assignment(bitvects, centroids)
+
+
+def scaffold_clustering(smiles: Sequence[str], generic: bool = False) -> np.ndarray:
+    """Cluster label per SMILES: rows sharing a Murcko scaffold share a label.
+
+    The label is the first 63 bits of the blake2b hash of the scaffold SMILES, so it
+    is stable across runs, row order and datasets (unlike an enumeration, or Python's
+    salted `hash`). `generic=True` first reduces the scaffold to its all-carbon,
+    single-bond framework, giving coarser clusters. Acyclic molecules (empty scaffold)
+    share one cluster. Invalid SMILES raise ValueError.
+    """
+    labels = np.empty(len(smiles), dtype=np.int64)
+    for i, smi in enumerate(smiles):
+        mol = Chem.MolFromSmiles(smi)
+        if mol is None:
+            raise ValueError(f"Invalid SMILES at position {i}: {smi!r}")
+        scaffold = MurckoScaffold.GetScaffoldForMol(mol)
+        if generic:
+            scaffold = MurckoScaffold.MakeScaffoldGeneric(scaffold)
+        digest = hashlib.blake2b(Chem.MolToSmiles(scaffold).encode(), digest_size=8)
+        labels[i] = int.from_bytes(digest.digest(), "big") >> 1
+    return labels
