@@ -339,20 +339,20 @@ def _balance_splits_from_tasks_vs_clusters_array(
 
     # Extract the solution
 
-    list_binary_solution = [pulp.value(x[i]) for i in range(N * S)]
-    list_initial_cluster_indices = [
-        (list(range(N)) * S)[i] for i, li in enumerate(list_binary_solution) if li == 1
-    ]
-    list_final_ML_subsets = [
-        (list((1 + np.repeat(range(S), N)).astype("int64")))[i]
-        for i, li in enumerate(list_binary_solution)
-        if li == 1
-    ]
-    mapping = np.array(
-        [x for _, x in sorted(zip(list_initial_cluster_indices, list_final_ML_subsets))]
-    )
-
-    return mapping - 1
+    values = [pulp.value(v) for v in x]
+    if any(v is None for v in values):
+        raise RuntimeError(
+            f"solver returned no solution (status: {pulp.LpStatus[prob.status]})"
+        )
+    sol = np.array(values).reshape(S, N)  # x index = cluster + subset * N
+    if np.abs(sol - sol.round()).max() > 1e-4:  # round if <1e-4 from 1
+        raise RuntimeError(
+            "solver returned non-integral cluster assignments, run longer"
+        )
+    assigned = sol.round().astype(int)
+    if not (assigned.sum(axis=0) == 1).all():
+        raise RuntimeError("solver did not assign each cluster to exactly one split")
+    return assigned.argmax(axis=0)
 
 
 def globally_balanced_split_polars(
@@ -515,3 +515,27 @@ def split(
                 pl.Series(split_col, split_idx)
             )  # @TODO: check if laziness ensures same order
     raise NotImplementedError(f"unknown split method: {method}")
+
+
+def split_by_order(
+    df: pl.DataFrame,
+    order_col: str,
+    n_splits: int,
+    split_col: str = "split",
+) -> pl.DataFrame:
+    """Return `df` with `split_col` added: rows sorted ascending by `order_col`
+    (date, property value, ...) are cut into `n_splits` contiguous, equally sized blocks.
+
+    Split 0 holds the lowest values. Rows with equal `order_col` values are never
+    separated across a block boundary, so block sizes can deviate from equal (and a
+    block can be empty if one value dominates). Nulls in `order_col` raise.
+    """
+    if split_col in df.columns:
+        raise ValueError(f"df already has a {split_col!r} column; pass `split_col=`")
+    if order_col not in df.columns:
+        raise ValueError(f"order_col {order_col!r} not in df: {df.columns}")
+    if df[order_col].null_count():
+        raise ValueError(f"order_col {order_col!r} contains nulls")
+    # "min" rank = 0-based position of the first row holding that value, shared by ties
+    start = pl.col(order_col).rank("min").cast(pl.Int64) - 1
+    return df.with_columns((start * n_splits // pl.len()).alias(split_col))
