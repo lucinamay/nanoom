@@ -339,20 +339,20 @@ def _balance_splits_from_tasks_vs_clusters_array(
 
     # Extract the solution
 
-    list_binary_solution = [pulp.value(x[i]) for i in range(N * S)]
-    list_initial_cluster_indices = [
-        (list(range(N)) * S)[i] for i, li in enumerate(list_binary_solution) if li == 1
-    ]
-    list_final_ML_subsets = [
-        (list((1 + np.repeat(range(S), N)).astype("int64")))[i]
-        for i, li in enumerate(list_binary_solution)
-        if li == 1
-    ]
-    mapping = np.array(
-        [x for _, x in sorted(zip(list_initial_cluster_indices, list_final_ML_subsets))]
-    )
-
-    return mapping - 1
+    values = [pulp.value(v) for v in x]
+    if any(v is None for v in values):
+        raise RuntimeError(
+            f"solver returned no solution (status: {pulp.LpStatus[prob.status]})"
+        )
+    sol = np.array(values).reshape(S, N)  # x index = cluster + subset * N
+    if np.abs(sol - sol.round()).max() > 1e-4:  # round if <1e-4 from 1
+        raise RuntimeError(
+            "solver returned non-integral cluster assignments, run longer"
+        )
+    assigned = sol.round().astype(int)
+    if not (assigned.sum(axis=0) == 1).all():
+        raise RuntimeError("solver did not assign each cluster to exactly one split")
+    return assigned.argmax(axis=0)
 
 
 def globally_balanced_split_polars(

@@ -536,7 +536,9 @@ class TestSplitByOrder:
         assert out["split"].to_list() == [0, 0, 0, 1, 1, 1, 2, 2, 2]
 
     def test_dates(self):
-        df = pl.DataFrame({"d": ["2020-01-02", "2019-05-01", "2021-03-03", "2018-01-01"]})
+        df = pl.DataFrame(
+            {"d": ["2020-01-02", "2019-05-01", "2021-03-03", "2018-01-01"]}
+        )
         out = split_by_order(df.with_columns(pl.col("d").str.to_date()), "d", 2)
         assert out["split"].to_list() == [1, 0, 1, 0]
 
@@ -547,3 +549,41 @@ class TestSplitByOrder:
             split_by_order(pl.DataFrame({"t": [1, 2]}), "z", 2)
         with pytest.raises(ValueError, match="already has"):
             split_by_order(pl.DataFrame({"t": [1, 2], "split": [0, 1]}), "t", 2)
+
+
+def _balance(monkeypatch: pytest.MonkeyPatch, fake_value=None):
+    import pulp
+
+    from nanoom.splitting import _balance_splits_from_tasks_vs_clusters_array
+
+    if fake_value is not None:
+        real_value = pulp.value
+        monkeypatch.setattr(pulp, "value", lambda v: fake_value(real_value(v)))
+    counts = np.arange(1, 13, dtype=float)[None, :]
+    return _balance_splits_from_tasks_vs_clusters_array(
+        counts, split_sizes=[0.5, 0.5], n_jobs=1, time_limit_seconds=20
+    )
+
+
+def test_balance_accepts_inexact_binary_solver_output(monkeypatch: pytest.MonkeyPatch):
+    """CBC at its time limit can return 0.9999999 instead of 1 for binary variables."""
+    mapping = _balance(
+        monkeypatch, lambda r: 1 - 1e-7 if r is not None and round(r) == 1 else r
+    )
+    assert len(mapping) == 12
+    assert set(mapping) == {0, 1}
+
+
+def test_balance_raises_without_solution(monkeypatch: pytest.MonkeyPatch):
+    with pytest.raises(RuntimeError, match="no solution"):
+        _balance(monkeypatch, lambda r: None)
+
+
+def test_balance_raises_on_non_integral_solution(monkeypatch: pytest.MonkeyPatch):
+    with pytest.raises(RuntimeError, match="non-integral"):
+        _balance(monkeypatch, lambda r: 0.6 if r is not None and round(r) == 1 else r)
+
+
+def test_balance_raises_when_cluster_not_assigned_once(monkeypatch: pytest.MonkeyPatch):
+    with pytest.raises(RuntimeError, match="exactly one"):
+        _balance(monkeypatch, lambda r: 1.0)
