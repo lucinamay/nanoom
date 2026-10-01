@@ -17,6 +17,7 @@ from nanoom.splitting import (
     globally_balanced_split_polars,
     sklearn_split,
     split,
+    split_by_order,
 )
 
 
@@ -515,3 +516,34 @@ class TestGbmtSplitsEquivalence:
                 f"{t}: nanoom={nanoom_frac[t]} gbmt={gbmt_frac[t]}"
             )
             assert np.allclose(nanoom_frac[t], 1 / 3, atol=0.06)
+
+
+class TestSplitByOrder:
+    def test_ascending_equal_blocks(self):
+        # order by `t`; `y` is an unrelated task column and must not affect the cut
+        df = pl.DataFrame(
+            {"t": [5, 1, 3, 2, 4, 6, 7, 8, 9, 10, 11, 12], "y": [9.0, 0.1] * 6}
+        )
+        out = split_by_order(df, "t", 3)
+        assert out["t"].to_list() == df["t"].to_list()  # row order preserved
+        expected = [(t - 1) // 4 for t in df["t"]]  # t=1..4 -> 0, 5..8 -> 1, 9..12 -> 2
+        assert out["split"].to_list() == expected
+
+    def test_ties_not_separated(self):
+        df = pl.DataFrame({"t": [1, 1, 1, 2, 2, 3, 4, 5, 6]})
+        out = split_by_order(df, "t", 3)
+        assert out.group_by("t").agg(pl.col("split").n_unique())["split"].max() == 1
+        assert out["split"].to_list() == [0, 0, 0, 1, 1, 1, 2, 2, 2]
+
+    def test_dates(self):
+        df = pl.DataFrame({"d": ["2020-01-02", "2019-05-01", "2021-03-03", "2018-01-01"]})
+        out = split_by_order(df.with_columns(pl.col("d").str.to_date()), "d", 2)
+        assert out["split"].to_list() == [1, 0, 1, 0]
+
+    def test_raises_on_nulls_missing_col_and_existing_split_col(self):
+        with pytest.raises(ValueError, match="nulls"):
+            split_by_order(pl.DataFrame({"t": [1, None, 3]}), "t", 2)
+        with pytest.raises(ValueError, match="not in df"):
+            split_by_order(pl.DataFrame({"t": [1, 2]}), "z", 2)
+        with pytest.raises(ValueError, match="already has"):
+            split_by_order(pl.DataFrame({"t": [1, 2], "split": [0, 1]}), "t", 2)

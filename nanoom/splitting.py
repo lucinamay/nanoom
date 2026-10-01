@@ -515,3 +515,27 @@ def split(
                 pl.Series(split_col, split_idx)
             )  # @TODO: check if laziness ensures same order
     raise NotImplementedError(f"unknown split method: {method}")
+
+
+def split_by_order(
+    df: pl.DataFrame,
+    order_col: str,
+    n_splits: int,
+    split_col: str = "split",
+) -> pl.DataFrame:
+    """Return `df` with `split_col` added: rows sorted ascending by `order_col`
+    (date, property value, ...) are cut into `n_splits` contiguous, equally sized blocks.
+
+    Split 0 holds the lowest values. Rows with equal `order_col` values are never
+    separated across a block boundary, so block sizes can deviate from equal (and a
+    block can be empty if one value dominates). Nulls in `order_col` raise.
+    """
+    if split_col in df.columns:
+        raise ValueError(f"df already has a {split_col!r} column; pass `split_col=`")
+    if order_col not in df.columns:
+        raise ValueError(f"order_col {order_col!r} not in df: {df.columns}")
+    if df[order_col].null_count():
+        raise ValueError(f"order_col {order_col!r} contains nulls")
+    # "min" rank = 0-based position of the first row holding that value, shared by ties
+    start = pl.col(order_col).rank("min").cast(pl.Int64) - 1
+    return df.with_columns((start * n_splits // pl.len()).alias(split_col))
