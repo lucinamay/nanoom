@@ -90,3 +90,29 @@ def test_min_distances_splits_jaccard():
     for r in results:
         assert 0 <= r["ext_distance_min"] <= 1
         assert 0 <= r["int_distance_min"] <= 1
+
+
+class TestNearestNeighbourDistances:
+    def test_euclidean_per_row(self):
+        descriptors = np.array([[0.0, 0], [1, 0], [10, 0], [13, 0]])
+        splits = np.array([0, 0, 1, 1])
+        out = ev.nearest_neighbour_distances(descriptors, splits, "euclidean")
+        np.testing.assert_allclose(out, [10, 9, 9, 12])
+
+    def test_jaccard_per_row(self):
+        descriptors = np.array([[1, 1, 0], [1, 0, 0], [0, 1, 1]])
+        splits = np.array([0, 0, 1])
+        out = ev.nearest_neighbour_distances(descriptors, splits, "jaccard")
+        np.testing.assert_allclose(out, [2 / 3, 1.0, 2 / 3])
+
+    def test_aligned_with_input_row_order(self):
+        descriptors = np.array([[0.0], [10], [1], [13]])
+        splits = np.array([0, 1, 0, 1])
+        out = ev.nearest_neighbour_distances(descriptors, splits, "euclidean")
+        np.testing.assert_allclose(out, [10, 9, 9, 12])
+
+    def test_raises_on_single_split_and_length_mismatch(self):
+        with pytest.raises(ValueError, match="at least 2"):
+            ev.nearest_neighbour_distances(np.zeros((3, 2)), np.zeros(3), "euclidean")
+        with pytest.raises(ValueError, match="length"):
+            ev.nearest_neighbour_distances(np.zeros((3, 2)), np.zeros(2), "euclidean")
