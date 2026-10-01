@@ -11,7 +11,7 @@ requires-python = ">=3.11" # inherent to bblean. code itself is 3.10
 authors= [{name = "lucina-may"}]
 dependencies = [
     "polars>=1.35",
-    "pulp>=3.3.0",
+    "pulp>=3.3.0,<4", # splitting.py uses LpVariable(lowBound=...), LpAffineExpression(list), PULP_CBC_CMD; all removed in pulp 4
     "scikit-learn>=1.7.2",
 ]
 

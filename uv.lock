@@ -958,7 +958,7 @@ requires-dist = [
     { name = "marimo", marker = "extra == 'tutorial'" },
     { name = "matplotlib", marker = "extra == 'plotting'" },
     { name = "polars", specifier = ">=1.35" },
-    { name = "pulp", specifier = ">=3.3.0" },
+    { name = "pulp", specifier = ">=3.3.0,<4" },
     { name = "rdkit", marker = "extra == 'chem'", specifier = ">=2025.3.6" },
     { name = "rich", marker = "extra == 'chem'", specifier = ">=14.2.0" },
     { name = "scikit-learn", specifier = ">=1.7.2" },
