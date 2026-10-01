@@ -112,7 +112,7 @@ class TestNearestNeighbourDistances:
         np.testing.assert_allclose(out, [10, 9, 9, 12])
 
     def test_raises_on_single_split_and_length_mismatch(self):
-        with pytest.raises(ValueError, match="at least 2"):
+        with pytest.raises(ValueError, match="need >= 2"):
             ev.nearest_neighbour_distances(np.zeros((3, 2)), np.zeros(3), "euclidean")
         with pytest.raises(ValueError, match="length"):
             ev.nearest_neighbour_distances(np.zeros((3, 2)), np.zeros(2), "euclidean")
@@ -145,7 +145,7 @@ class TestAdversarialAuc:
         )
 
     def test_raises_on_single_split_and_length_mismatch(self):
-        with pytest.raises(ValueError, match="at least 2"):
+        with pytest.raises(ValueError, match="need >= 2"):
             ev.adversarial_auc(np.zeros((10, 2)), np.zeros(10))
         with pytest.raises(ValueError, match="length"):
             ev.adversarial_auc(np.zeros((10, 2)), np.zeros(9))
