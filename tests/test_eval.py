@@ -116,3 +116,36 @@ class TestNearestNeighbourDistances:
             ev.nearest_neighbour_distances(np.zeros((3, 2)), np.zeros(3), "euclidean")
         with pytest.raises(ValueError, match="length"):
             ev.nearest_neighbour_distances(np.zeros((3, 2)), np.zeros(2), "euclidean")
+
+
+class TestAdversarialAuc:
+    @staticmethod
+    def _blobs(offset: float) -> tuple[np.ndarray, np.ndarray]:
+        rng = np.random.default_rng(0)
+        descriptors = np.vstack(
+            [rng.normal(0, 1, (100, 5)), rng.normal(offset, 1, (100, 5))]
+        )
+        return descriptors, np.repeat([0, 1], 100)
+
+    def test_separated_splits_score_high(self):
+        descriptors, splits = self._blobs(offset=8.0)
+        aucs = ev.adversarial_auc(descriptors, splits)
+        assert set(aucs) == {0, 1}
+        assert min(aucs.values()) > 0.95
+
+    def test_indistinguishable_splits_score_near_chance(self):
+        descriptors, splits = self._blobs(offset=0.0)
+        aucs = ev.adversarial_auc(descriptors, splits)
+        assert all(0.35 < auc < 0.65 for auc in aucs.values())
+
+    def test_deterministic_for_seed(self):
+        descriptors, splits = self._blobs(offset=1.0)
+        assert ev.adversarial_auc(descriptors, splits, seed=1) == ev.adversarial_auc(
+            descriptors, splits, seed=1
+        )
+
+    def test_raises_on_single_split_and_length_mismatch(self):
+        with pytest.raises(ValueError, match="at least 2"):
+            ev.adversarial_auc(np.zeros((10, 2)), np.zeros(10))
+        with pytest.raises(ValueError, match="length"):
+            ev.adversarial_auc(np.zeros((10, 2)), np.zeros(9))

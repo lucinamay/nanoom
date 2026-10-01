@@ -2,6 +2,9 @@ from typing import Literal, TypedDict
 
 import numpy as np
 import numpy.typing as npt
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import roc_auc_score
+from sklearn.model_selection import StratifiedKFold, cross_val_predict
 
 
 def _numpy_euclidean(a: np.ndarray, b: np.ndarray) -> np.ndarray:
@@ -132,7 +135,7 @@ def nearest_neighbour_distances(
         descriptors, splits, "descriptors", "splits"
     )
     if len(np.unique(splits)) < 2:
-        raise ValueError("need at least 2 distinct splits to find a neighbour in another")
+        raise ValueError("need >= 2 distinct splits to find a neighbour in another")
     distance_function = _distance_function(metric)
     nearest = np.empty(len(splits))
     for j in np.unique(splits):
@@ -151,4 +154,18 @@ def adversarial_auc(
     ~0.5 means the split is indistinguishable from the rest; ~1.0 means it occupies
     a separate region of descriptor space.
     """
-    raise NotImplementedError
+    descriptors, splits = _same_length_arrays(
+        descriptors, splits, "descriptors", "splits"
+    )
+    if len(np.unique(splits)) < 2:
+        raise ValueError("need >= 2 distinct splits to tell one from the rest")
+    cv = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=seed)
+    clf = RandomForestClassifier(random_state=seed)
+    aucs: dict[int, float] = {}
+    for j in np.unique(splits):
+        is_split = splits == j
+        proba = cross_val_predict(
+            clf, descriptors, is_split, cv=cv, method="predict_proba"
+        )
+        aucs[int(j)] = float(roc_auc_score(is_split, proba[:, 1]))
+    return aucs
