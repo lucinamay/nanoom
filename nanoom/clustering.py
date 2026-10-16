@@ -72,6 +72,7 @@ def cluster(
         np.ndarray: array of cluster indices per descriptor
 
     Notes:
+        - identical descriptor rows are clustered once and share a label.
         - If descriptor is a bit vector, DBSCAN will use Jaccard metric by default.
         - If `n_clusters` is provided as a float between 0 and 1, it is interpreted
           as the fraction of the dataset size to use as the number of clusters (plus 1).
@@ -81,6 +82,7 @@ def cluster(
         lg.warning(
             "Descriptors appear to be a square distance matrix, but clustering methods expect feature vectors. Proceeding anyway."
         )
+    descriptors, inverse = np.unique(descriptors, axis=0, return_inverse=True)
     n_clusters = kwargs.get("n_clusters", None)
     if n_clusters and n_clusters < 1 and n_clusters > 0:
         kwargs["n_clusters"] = int(descriptors.shape[0] // (1 / n_clusters) + 1)
@@ -96,15 +98,15 @@ def cluster(
 
     match method:
         case "kmeans":
-            return KMeans(*args, **kwargs).fit(descriptors).labels_
+            labels = KMeans(*args, **kwargs).fit(descriptors).labels_
         case "dbscan":
             if "metric" not in kwargs and _is_binary_descriptor(descriptors):
                 kwargs["metric"] = "jaccard"
             if kwargs.get("metric", None) == "jaccard":
                 descriptors = descriptors.astype(bool)  # prevent warning
-            return DBSCAN(*args, **kwargs).fit(descriptors).labels_
+            labels = DBSCAN(*args, **kwargs).fit(descriptors).labels_
         case "hdbscan":
-            return (
+            labels = (
                 HDBSCAN(*args, copy=kwargs.pop("copy", False), **kwargs)
                 .fit(descriptors)
                 .labels_
@@ -112,25 +114,27 @@ def cluster(
         case "sphere_exclusion":
             from nanoom.chem import _sphere_exclusion
 
-            return _sphere_exclusion(descriptors, *args, **kwargs)
+            labels = _sphere_exclusion(descriptors, *args, **kwargs)
         case "bitbirch":
             from nanoom.chem import _bitbirch
 
-            return _bitbirch(descriptors, *args, **kwargs)
+            labels = _bitbirch(descriptors, *args, **kwargs)
         case "maxmin":
             from nanoom.chem import maxmin_clustering
 
-            return maxmin_clustering(descriptors, *args, **kwargs)
+            labels = maxmin_clustering(descriptors, *args, **kwargs)
         case "leader_picker":
             from nanoom.chem import leader_picker_clustering
 
-            return leader_picker_clustering(descriptors, *args, **kwargs)
+            labels = leader_picker_clustering(descriptors, *args, **kwargs)
         case "hash_dummy":
-            return dummy_hash_clustering(descriptors, *args, **kwargs)
+            labels = dummy_hash_clustering(descriptors, *args, **kwargs)
         case "random":
-            return random_clustering(descriptors, *args, **kwargs)
+            labels = random_clustering(descriptors, *args, **kwargs)
         case _:
             raise ValueError(f"Unknown clustering method: {method}")
+    assert labels is not None
+    return labels[inverse.reshape(-1)]  # numpy 2.0.0 returns a 2-D inverse for axis=0
 
 
 def _silhouette_score(
