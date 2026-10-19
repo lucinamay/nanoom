@@ -5,7 +5,11 @@ from typing import Literal
 
 import numpy as np
 from sklearn.cluster import DBSCAN, HDBSCAN, KMeans
-from sklearn.metrics import silhouette_score as sk_silhouette
+from sklearn.metrics import (
+    calinski_harabasz_score,
+    davies_bouldin_score,
+    silhouette_score,
+)
 
 ClusteringMethod = Literal[
     "kmeans",
@@ -188,38 +192,45 @@ def merge_clusters(
     return out
 
 
-def _silhouette_score(
-    descriptors: np.ndarray, clusters: np.ndarray, **kwargs
-) -> float | None:
-    """Compute silhouette score if valid, otherwise return None."""
-    unique_labels = np.unique(clusters)
-    n_valid_clusters = len(unique_labels[unique_labels != -1])
-    metric = "euclidean" if descriptors.max() > 1 else "jaccard"
-    if n_valid_clusters >= 2 and len(clusters) > n_valid_clusters:
-        if descriptors.shape[0] > 10000:
-            lg.info(
-                f"Computing silhouette score on a sample of 10,000 from {descriptors.shape[0]} datapoints"
-            )
-            np.random.seed(1)
-            sample_indices = np.random.choice(
-                descriptors.shape[0], size=10000, replace=False
-            )
-            return sk_silhouette(
-                descriptors[sample_indices],
-                clusters[sample_indices],
-                metric=metric,
-                **kwargs,
-            )
-        return sk_silhouette(descriptors, clusters, **kwargs)
-
-    lg.warning(f"Only {n_valid_clusters} valid cluster(s) found, returning None")
-    return None
-
-
 def evaluate(
     descriptors: np.ndarray,
     clusters: np.ndarray,
-    method: Literal["silhouette", "inertia", "calinski-harabasz", "davies-bouldin"],
-    **kwargs,
-):
-    raise NotImplementedError
+    method: Literal["silhouette", "calinski-harabasz", "davies-bouldin"] = "silhouette",
+    metric: str | None = None,
+    sample_size: int | None = 10_000,
+    seed: int = 0,
+) -> float:
+    """Cluster quality score of `clusters` on `descriptors` (sklearn.metrics).
+
+    silhouette: -1..1, higher is better. `metric` defaults to jaccard for binary
+        descriptors, else euclidean; "precomputed" takes the n x n distance
+        matrix. Scored on `sample_size` random rows (None: all rows).
+    calinski-harabasz (higher is better), davies-bouldin (lower is better):
+        euclidean on feature vectors; `metric`, `sample_size` are not used.
+
+    Noise (-1) counts as one cluster; filter it out to score the clusters alone.
+    Raises (sklearn) unless 2 <= number of clusters < number of rows.
+    """
+    match method:
+        case "silhouette":
+            if metric is None:
+                metric = (
+                    "jaccard" if _is_binary_descriptor(descriptors) else "euclidean"
+                )
+            if metric == "jaccard":
+                descriptors = descriptors.astype(bool)  # prevent warning
+            return float(
+                silhouette_score(
+                    descriptors,
+                    clusters,
+                    metric=metric,
+                    sample_size=sample_size,
+                    random_state=seed,
+                )
+            )
+        case "calinski-harabasz":
+            return float(calinski_harabasz_score(descriptors, clusters))
+        case "davies-bouldin":
+            return float(davies_bouldin_score(descriptors, clusters))
+        case _:
+            raise ValueError(f"Unknown evaluation method: {method}")

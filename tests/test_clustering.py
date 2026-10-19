@@ -5,9 +5,9 @@ from nanoom.clustering import (
     BIT_CLUSTERING_METHODS,
     ClusteringMethod,
     _auto_n_clusters,
-    _silhouette_score,
     cluster,
     dummy_hash_clustering,
+    evaluate,
     random_clustering,
 )
 
@@ -118,26 +118,31 @@ def test_cluster_square_distance_matrix(sample_distance_matrix: np.ndarray):
     assert len(clusters) == len(sample_distance_matrix)
 
 
-# --- Tests for Silhouette Score ---
-def test_silhouette_score_valid(sample_descriptors: np.ndarray):
-    clusters = cluster(sample_descriptors, method="kmeans", n_clusters=3)
-    score = _silhouette_score(sample_descriptors, clusters)
-    assert score is not None
-    assert -1 <= score <= 1
+class TestEvaluate:
+    def test_binary_descriptors_default_to_jaccard(self, sample_bit_descriptors):
+        """Oracle: scipy jaccard distances, scored as precomputed."""
+        from scipy.spatial.distance import pdist, squareform
 
+        clusters = np.arange(len(sample_bit_descriptors)) % 3
+        square = squareform(pdist(sample_bit_descriptors.astype(bool), "jaccard"))
+        expected = evaluate(square, clusters, metric="precomputed", sample_size=None)
+        assert evaluate(
+            sample_bit_descriptors, clusters, sample_size=None
+        ) == pytest.approx(expected)
 
-def test_silhouette_score_single_cluster(sample_descriptors: np.ndarray):
-    clusters = np.zeros(len(sample_descriptors), dtype=int)
-    score = _silhouette_score(sample_descriptors, clusters)
-    assert score is None
+    def test_sample_size_subsamples(self, sample_descriptors):
+        clusters = np.arange(len(sample_descriptors)) % 3
+        full = evaluate(sample_descriptors, clusters, sample_size=None)
+        assert evaluate(sample_descriptors, clusters, sample_size=30) != full
 
+    @pytest.mark.parametrize("method", ["calinski-harabasz", "davies-bouldin"])
+    def test_other_methods_return_float(self, sample_descriptors, method):
+        clusters = cluster(sample_descriptors, method="kmeans", n_clusters=3)
+        assert isinstance(evaluate(sample_descriptors, clusters, method), float)
 
-def test_silhouette_score_large_dataset():
-    np.random.seed(42)
-    descriptors = np.random.rand(15000, 5)
-    clusters = np.random.randint(0, 3, size=15000)
-    score = _silhouette_score(descriptors, clusters)
-    assert score is not None
+    def test_single_cluster_raises(self, sample_descriptors):
+        with pytest.raises(ValueError):
+            evaluate(sample_descriptors, np.zeros(len(sample_descriptors), dtype=int))
 
 
 # --- Tests for BIT Clustering Methods (Mocked) ---

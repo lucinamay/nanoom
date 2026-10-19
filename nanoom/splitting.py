@@ -346,8 +346,8 @@ def _balance_splits_from_tasks_vs_clusters_array(
 
     # Warm start from a greedy assignment, so CBC holds an integer solution from
     # the start and a time limit returns its best one instead of the LP relaxation
-    if warm_start:
-        start = _greedy_assignment(A[0], fractional_sizes)
+    start = _greedy_assignment(A[0], fractional_sizes) if warm_start else None
+    if start is not None:
         for c, m in enumerate(start):
             for s in range(S):
                 x[c + s * N].setInitialValue(int(s == m))
@@ -372,7 +372,17 @@ def _balance_splits_from_tasks_vs_clusters_array(
     # Extract the solution
 
     values = [pulp.value(v) for v in x]
-    if any(v is None for v in values):
+    solved = not any(v is None for v in values)
+    sol = np.array(values, dtype=float).reshape(S, N)  # x index = cluster + subset * N
+    integral = solved and np.abs(sol - sol.round()).max() <= 1e-4  # CBC: 0.9999999
+    if start is not None and not integral:
+        # CBC can stop at the time limit before it loads the start; keep the greedy one
+        lg.warning(
+            f"balancing: CBC returned no integral solution (status: "
+            f"{pulp.LpStatus[prob.status]}), returning the greedy start"
+        )
+        return start
+    if not solved:
         raise RuntimeError(
             f"solver returned no solution (status: {pulp.LpStatus[prob.status]})"
         )
@@ -380,8 +390,7 @@ def _balance_splits_from_tasks_vs_clusters_array(
         f"balancing: status {pulp.LpStatus[prob.status]}, objective "
         f"{pulp.value(prob.objective):.4g}"
     )
-    sol = np.array(values).reshape(S, N)  # x index = cluster + subset * N
-    if np.abs(sol - sol.round()).max() > 1e-4:  # round if <1e-4 from 1
+    if not integral:
         raise RuntimeError(
             "solver returned non-integral cluster assignments, run longer"
         )

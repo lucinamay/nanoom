@@ -551,7 +551,7 @@ class TestSplitByOrder:
             split_by_order(pl.DataFrame({"t": [1, 2], "split": [0, 1]}), "t", 2)
 
 
-def _balance(monkeypatch: pytest.MonkeyPatch, fake_value=None):
+def _balance(monkeypatch: pytest.MonkeyPatch, fake_value=None, **kwargs):
     import pulp
 
     from nanoom.splitting import _balance_splits_from_tasks_vs_clusters_array
@@ -561,7 +561,7 @@ def _balance(monkeypatch: pytest.MonkeyPatch, fake_value=None):
         monkeypatch.setattr(pulp, "value", lambda v: fake_value(real_value(v)))
     counts = np.arange(1, 13, dtype=float)[None, :]
     return _balance_splits_from_tasks_vs_clusters_array(
-        counts, split_sizes=[0.5, 0.5], n_jobs=1, time_limit_seconds=20
+        counts, split_sizes=[0.5, 0.5], n_jobs=1, time_limit_seconds=20, **kwargs
     )
 
 
@@ -582,6 +582,21 @@ def test_balance_raises_without_solution(monkeypatch: pytest.MonkeyPatch):
 def test_balance_raises_on_non_integral_solution(monkeypatch: pytest.MonkeyPatch):
     with pytest.raises(RuntimeError, match="non-integral"):
         _balance(monkeypatch, lambda r: 0.6 if r is not None and round(r) == 1 else r)
+
+
+def test_warm_start_returns_greedy_start_on_non_integral_solution(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """CBC can hit the time limit before loading the start (seen on Linux CI)."""
+    from nanoom.splitting import _greedy_assignment
+
+    expected = _greedy_assignment(np.arange(1, 13) / 78, np.array([0.5, 0.5]))
+    mapping = _balance(
+        monkeypatch,
+        lambda r: 0.6 if r is not None and round(r) == 1 else r,
+        warm_start=True,
+    )
+    np.testing.assert_array_equal(mapping, expected)
 
 
 def test_balance_raises_when_cluster_not_assigned_once(monkeypatch: pytest.MonkeyPatch):

@@ -14,7 +14,7 @@ them. modules split by task / context (mostly external package context):
 
 | module          | owns                                                                       |
 | --------------- | -------------------------------------------------------------------------- |
-| `clustering.py` | `cluster()` — descriptors → cluster label per row. uses sklearn (kmeans/dbscan/hdbscan), `chem.py`, or the built-in random/hash dummies. |
+| `clustering.py` | `cluster()` — descriptors → cluster label per row. uses sklearn (kmeans/dbscan/hdbscan), `chem.py`, or the built-in random/hash dummies. `merge_clusters()` joins clusters with close centroids; `evaluate()` scores a clustering (sklearn silhouette / calinski-harabasz / davies-bouldin). |
 | `chem.py`       | cheminformatics-specific (rdkit/bblean) cluster methods for bit-vector fingerprints. Imported lazily, only under the `chem` extra. |
 | `splitting.py`  | `split()` — dataframe + task columns → the same dataframe with a `split` column. Both the LP balancer and the sklearn fallback. |
 | `eval.py`       | leakage & balance reports/metrics of a performed split. |
@@ -94,10 +94,9 @@ pulp + scikit-learn.
   clusters stop representing real similarity. Currently the caller decides. An `auto`
   mode that tunes this against a held-out balance/leakage score is task 1 in
   [DEVELOPMENT.md](DEVELOPMENT.md), and the right objective for it is not settled.
-- **Should nanoom score cluster quality at all?** `clustering.evaluate()` is a
-  declared stub and `_silhouette_score` is written but unused. Silhouette on
-  fingerprints is weakly informative, and the metric that actually matters is
-  downstream split quality, not cluster compactness.
+- **Is cluster compactness worth scoring?** `clustering.evaluate()` scores it, but
+  silhouette on fingerprints is weakly informative, and the metric that actually
+  matters is downstream split quality (`eval.nearest_neighbour_distances`).
 - **Ordinal classification.** `_task_type` maps integer columns to plain
   classification, so an ordered readout (e.g. activity bands) loses its ordering when
   binned. Whether to add an explicit ordinal task type, or let callers pre-bin, is

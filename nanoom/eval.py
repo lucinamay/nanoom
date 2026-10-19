@@ -124,18 +124,24 @@ def check_no_group_overlap(group_by: npt.ArrayLike, splits: npt.ArrayLike) -> No
 
 
 def nearest_neighbour_distances(
-    descriptors: np.ndarray, splits: np.ndarray, metric: Literal["euclidean", "jaccard"]
+    descriptors: np.ndarray,
+    splits: np.ndarray,
+    metric: Literal["euclidean", "jaccard", "precomputed"],
 ) -> np.ndarray:
     """Per row: distance to the nearest row in a *different* split.
 
     Row-level counterpart of `min_distances_splits` (which only returns summary
     stats); small values mark leakage candidates. Needs at least 2 splits.
+    metric="precomputed": `descriptors` is the n x n distance matrix.
     """
     descriptors, splits = _same_length_arrays(
         descriptors, splits, "descriptors", "splits"
     )
     if len(np.unique(splits)) < 2:
         raise ValueError("need >= 2 distinct splits to find a neighbour in another")
+    if metric == "precomputed":
+        same = splits[:, None] == splits[None, :]
+        return np.where(same, np.inf, descriptors).min(axis=1)
     distance_function = _distance_function(metric)
     nearest = np.empty(len(splits))
     for j in np.unique(splits):
