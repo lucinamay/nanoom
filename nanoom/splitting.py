@@ -158,6 +158,18 @@ def _task_vs_clusters_df(
     )
 
 
+def _greedy_assignment(sizes: np.ndarray, fractional_sizes: np.ndarray) -> np.ndarray:
+    """Split per cluster: largest cluster first, each into the split furthest
+    below its target fraction; every split gets a cluster first."""
+    filled = np.zeros(len(fractional_sizes))
+    out = np.empty(len(sizes), dtype=int)
+    for i, c in enumerate(np.argsort(-sizes, kind="stable")):
+        m = i if i < len(filled) else int(np.argmax(fractional_sizes - filled))
+        out[c] = m
+        filled[m] += sizes[c]
+    return out
+
+
 def _balance_splits_from_tasks_vs_clusters_array(
     tasks_vs_clusters_array: np.ndarray,
     split_sizes: list[float] = [0.2, 0.2, 0.2, 0.2, 0.2],
@@ -166,6 +178,7 @@ def _balance_splits_from_tasks_vs_clusters_array(
     time_limit_seconds: float = 5 * 60,  # og: 60m but no one has the time
     n_jobs: int = int((os.cpu_count() or 1) // 1.2) + 1,
     verbose: bool = False,
+    warm_start: bool = False,
 ) -> np.ndarray:
     """
     Linear programming function needed to balance the data while merging clusters
@@ -196,6 +209,9 @@ def _balance_splits_from_tasks_vs_clusters_array(
         n_jobs : int
             - the maximal number of threads to be used by the solver.
             - it is advisable to set this number as high as allowed by the available resources.
+        warm_start : bool
+            - if True, CBC starts from `_greedy_assignment`, so it holds an integer solution
+            from the start and a time limit returns its best one instead of raising.
 
     Returns:
         List (of length equal to the number of columns of tasks_vs_clusters_array) of final cluster identifiers
@@ -245,8 +261,9 @@ def _balance_splits_from_tasks_vs_clusters_array(
             f"balancing {N} clusters into {S} splits = {N * S} binary variables. "
             "CBC may not prove optimality within `time_limit_seconds` "
             f"(currently {time_limit_seconds}s), and will return its best solution "
-            "so far. Pass `relative_gap` (e.g. 0.01) to stop at a near-optimal "
-            "solution quickly, or cluster more coarsely."
+            "so far, or raise if it has none. Pass `relative_gap` (e.g. 0.01) to "
+            "stop at a near-optimal solution quickly, `warm_start=True` to always "
+            "have a solution, or cluster more coarsely."
         )
 
     # Given matrix A (M x N) of fraction of data per cluster, assign each cluster to one of S final ML subsets,
@@ -327,6 +344,20 @@ def _balance_splits_from_tasks_vs_clusters_array(
                 >= fractional_sizes[m]
             )
 
+    # Warm start from a greedy assignment, so CBC holds an integer solution from
+    # the start and a time limit returns its best one instead of the LP relaxation
+    if warm_start:
+        start = _greedy_assignment(A[0], fractional_sizes)
+        for c, m in enumerate(start):
+            for s in range(S):
+                x[c + s * N].setInitialValue(int(s == m))
+        for m in range(S):
+            for t in range(M):
+                X[m * M + t].setInitialValue(
+                    abs(A[t, start == m].sum() - fractional_sizes[m])
+                )
+        lg.info(f"balancing: greedy start objective {pulp.value(prob.objective):.4g}")
+
     # Solve the model
     prob.solve(
         pulp.PULP_CBC_CMD(
@@ -334,6 +365,7 @@ def _balance_splits_from_tasks_vs_clusters_array(
             timeLimit=time_limit_seconds,
             threads=n_jobs,
             msg=verbose,
+            warmStart=warm_start,
         )
     )
 
@@ -344,6 +376,10 @@ def _balance_splits_from_tasks_vs_clusters_array(
         raise RuntimeError(
             f"solver returned no solution (status: {pulp.LpStatus[prob.status]})"
         )
+    lg.info(
+        f"balancing: status {pulp.LpStatus[prob.status]}, objective "
+        f"{pulp.value(prob.objective):.4g}"
+    )
     sol = np.array(values).reshape(S, N)  # x index = cluster + subset * N
     if np.abs(sol - sol.round()).max() > 1e-4:  # round if <1e-4 from 1
         raise RuntimeError(
@@ -458,6 +494,10 @@ def split(
 
     The cluster column stays in the frame, so the per-cluster assignment is
     `out.group_by(cluster_col).agg(pl.col(split_col).first())`.
+
+    `**kwargs` go to the method: for tricarico e.g. `relative_gap`,
+    `time_limit_seconds` and `warm_start` (see
+    `_balance_splits_from_tasks_vs_clusters_array`).
     """
     if split_col in df.columns:
         # on the tricarico path this would join to `split_right` and leave the stale

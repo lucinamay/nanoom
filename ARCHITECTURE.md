@@ -52,12 +52,17 @@ in a single value-rank bin and skew it. qcut may be better, but neither approach
 extreme case of repeated values.
 we kept in `binning_approach="gbmt_splits"` for 'reproducing' gbmt-based results.
 
-**pulp/CBC, and the time limit returns rather than raises.** pulp ships with the
-solver CBC, so there's no need for installing separate solvers. Reaching *exact*
-optimality is much slower than near-optimality, so `time_limit_seconds` (default
-300, might be turned back to 60*60) returns the best solution found so far
-(instead of failing) (c.f. `relative_gap` allows stopping early on purpose).
-Past 1000 clusters/rows `split()` because "exact optimum" for that may not be realistic.
+**pulp/CBC; a time limit without an integer solution raises, unless warm-started.**
+pulp ships with the solver CBC, so there's no need for installing separate solvers.
+Reaching *exact* optimality is much slower than near-optimality, so at
+`time_limit_seconds` (default 300) CBC returns the best integer solution found so far
+(c.f. `relative_gap` allows stopping early on purpose). If it has found none, pulp
+reads back the LP relaxation (fractional assignments), and nanoom raises
+`RuntimeError("... non-integral ...")` rather than round it.
+`warm_start=True` (opt-in) hands CBC a greedy assignment (largest cluster first,
+into the split furthest below its target) as its first integer solution, so a time
+limit returns a valid, possibly less balanced split instead of raising.
+Past 1000 clusters `split()` warns, because "exact optimum" for that may not be realistic.
 
 **`split()` returns the dataframe, per row.** 
 Both methods return `df` with a `split` column, one value per row. 

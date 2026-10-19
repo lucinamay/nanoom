@@ -587,3 +587,27 @@ def test_balance_raises_on_non_integral_solution(monkeypatch: pytest.MonkeyPatch
 def test_balance_raises_when_cluster_not_assigned_once(monkeypatch: pytest.MonkeyPatch):
     with pytest.raises(RuntimeError, match="exactly one"):
         _balance(monkeypatch, lambda r: 1.0)
+
+
+def test_greedy_assignment_fills_every_split_towards_its_fraction():
+    from nanoom.splitting import _greedy_assignment
+
+    sizes = np.array([1, 5, 2, 2, 1, 1], dtype=float)
+    out = _greedy_assignment(sizes / sizes.sum(), np.array([0.5, 0.5]))
+    assert out[1] == 0  # largest first, into split 0
+    assert np.bincount(out, weights=sizes).tolist() == [6, 6]
+
+
+def test_balance_at_a_one_second_limit_returns_an_integral_assignment():
+    """Warm-started: hitting the limit on a large problem returns an integer
+    solution, not the LP relaxation."""
+    from nanoom.splitting import _balance_splits_from_tasks_vs_clusters_array
+
+    rng = np.random.default_rng(0)
+    counts = rng.integers(0, 5, size=(6, 3000)).astype(float)
+    counts[0] = counts[1:].sum(axis=0) + 1
+    mapping = _balance_splits_from_tasks_vs_clusters_array(
+        counts, split_sizes=[0.2] * 5, n_jobs=1, time_limit_seconds=1, warm_start=True
+    )
+    assert len(mapping) == 3000
+    assert set(mapping) == set(range(5))
