@@ -137,6 +137,57 @@ def cluster(
     return labels[inverse.reshape(-1)]  # numpy 2.0.0 returns a 2-D inverse for axis=0
 
 
+def merge_clusters(
+    descriptors: np.ndarray,
+    clusters: np.ndarray,
+    *,
+    threshold: float | None = None,
+    n_clusters: int | None = None,
+    linkage: Literal[
+        "single", "complete", "average", "weighted", "centroid", "median", "ward"
+    ] = "average",
+    metric: str = "euclidean",
+) -> np.ndarray:
+    """Merge clusters by hierarchical clustering of their centroids (mean descriptor).
+
+    Exactly one of `threshold` (merge clusters whose centroid linkage distance is
+    <= threshold) or `n_clusters` (merge down to at most n_clusters) is required.
+    `linkage` and `metric` go to `scipy.cluster.hierarchy.linkage`; "centroid",
+    "median" and "ward" need metric="euclidean".
+
+    Returns labels 0..k-1 per row; noise (-1, from dbscan / hdbscan) stays -1.
+    """
+    from scipy.cluster import hierarchy
+
+    descriptors, clusters = np.asarray(descriptors), np.asarray(clusters)
+    if len(descriptors) != len(clusters):
+        raise ValueError(
+            f"descriptors has length {len(descriptors)} but clusters has length "
+            + f"{len(clusters)}; both must be per-row and aligned"
+        )
+    if (threshold is None) == (n_clusters is None):
+        raise ValueError("pass exactly one of `threshold` or `n_clusters`")
+
+    keep = clusters != -1
+    ids, inverse = np.unique(clusters[keep], return_inverse=True)
+    if len(ids) < 2:
+        merged = np.ones(len(ids), dtype=int)
+    else:
+        # ponytail: centroids keep this O(k^2); per-row linkage would be O(n^2)
+        centroids = np.zeros((len(ids), descriptors.shape[1]))
+        np.add.at(centroids, inverse, descriptors[keep])
+        centroids /= np.bincount(inverse)[:, None]
+        z = hierarchy.linkage(centroids, method=linkage, metric=metric)
+        merged = (
+            hierarchy.fcluster(z, threshold, "distance")
+            if threshold is not None
+            else hierarchy.fcluster(z, n_clusters, "maxclust")
+        )
+    out = np.full(len(clusters), -1)
+    out[keep] = merged[inverse] - 1  # fcluster labels 1..k
+    return out
+
+
 def _silhouette_score(
     descriptors: np.ndarray, clusters: np.ndarray, **kwargs
 ) -> float | None:

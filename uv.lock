@@ -914,7 +914,7 @@ wheels = [
 
 [[package]]
 name = "nanoom"
-version = "0.1.0a20261002"
+version = "0.1.0a20261019"
 source = { editable = "." }
 dependencies = [
     { name = "polars" },

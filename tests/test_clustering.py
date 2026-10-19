@@ -152,6 +152,28 @@ def test_cluster_sphere_exclusion(sample_bit_descriptors: np.ndarray):
     assert len(clusters) == len(sample_bit_descriptors)
 
 
+def test_sphere_exclusion_assigns_each_row_to_its_nearest_leader():
+    """Oracle: Tanimoto in numpy to RDKit's LeaderPicker leaders; leader i keeps
+    cluster i, every other row joins its most similar leader (first on ties).
+    In this data one non-leader row i (i below the 20 leaders) is nearest to
+    leader i, the case `sims[i, i] = 0` used to hide."""
+    from rdkit.SimDivFilters import rdSimDivPickers
+
+    from nanoom.chem import _ndarray_to_bitvects, _sphere_exclusion
+
+    X = (np.random.default_rng(12).random((30, 24)) < 0.3).astype(np.uint8)
+    picks = list(
+        rdSimDivPickers.LeaderPicker().LazyBitVectorPick(
+            _ndarray_to_bitvects(X), len(X), 0.6
+        )
+    )
+    shared = X[picks].astype(int) @ X.T.astype(int)
+    union = X[picks].sum(axis=1)[:, None] + X.sum(axis=1)[None, :] - shared
+    expected = np.argmax(shared / union, axis=0)
+    expected[picks] = np.arange(len(picks))
+    np.testing.assert_array_equal(_sphere_exclusion(X, threshold=0.6), expected)
+
+
 @pytest.mark.parametrize("method", sorted(BIT_CLUSTERING_METHODS))
 @pytest.mark.parametrize(
     "descriptors",
@@ -236,3 +258,38 @@ def test_bitbirch_identical_fingerprints_share_cluster():
         descriptors, method="bitbirch", threshold=0.5, branching_factor=5
     )
     assert _n_split_duplicates(descriptors, clusters) == 0
+
+
+class TestMergeClusters:
+    """Oracle by construction: three blobs 10 apart, each cut into two clusters."""
+
+    @pytest.fixture
+    def blobs(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        rng = np.random.default_rng(0)
+        blob = np.repeat(np.arange(3), 20)
+        X = blob[:, None] * 10.0 + rng.normal(0, 0.1, (60, 2))
+        over = blob * 2 + np.tile([0, 1], 30)  # 6 clusters, 2 per blob
+        return X, over, blob
+
+    @pytest.mark.parametrize("kw", [{"threshold": 2.0}, {"n_clusters": 3}])
+    def test_merges_back_to_blobs(self, blobs, kw):
+        from nanoom.clustering import merge_clusters
+
+        X, over, blob = blobs
+        merged = merge_clusters(X, over, **kw)
+        assert len(set(merged)) == len(set(zip(merged, blob))) == 3  # same partition
+
+    def test_noise_stays_noise(self, blobs):
+        from nanoom.clustering import merge_clusters
+
+        X, over, _ = blobs
+        over[:5] = -1
+        merged = merge_clusters(X, over, threshold=2.0)
+        assert (merged[:5] == -1).all() and (merged[5:] >= 0).all()
+
+    def test_requires_exactly_one_criterion(self, blobs):
+        from nanoom.clustering import merge_clusters
+
+        X, over, _ = blobs
+        with pytest.raises(ValueError, match="exactly one"):
+            merge_clusters(X, over)
