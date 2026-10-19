@@ -3,7 +3,6 @@
 import hashlib
 import logging as lg
 from collections import defaultdict
-from pathlib import Path
 from typing import Sequence
 
 import bblean
@@ -36,11 +35,11 @@ def _ndarray_to_bitvects(array: np.ndarray) -> list[DataStructs.ExplicitBitVect]
 def _sphere_exclusion(
     descriptors: np.ndarray | list[DataStructs.ExplicitBitVect],
     threshold: float = 0.65,
-    save_cluster_leaders_to: Path | None = None,
 ) -> np.ndarray:
     """
     threshold == minimum distance between cluster centroids
-    Takes a list of ExplicitBitVects and returns a dictionary of cluster_ids:list[indices].
+    Takes bit vectors (array rows or ExplicitBitVects) and returns the cluster index
+    of each, the index of its nearest leader among the picks.
     Comment: based on https://greglandrum.github.io/rdkit-blog/posts/2020-11-18-sphere-exclusion-clustering.html
     """
     lg.info(f"Starting sphere exclusion clustering of {len(descriptors)} datapoints")
@@ -53,11 +52,6 @@ def _sphere_exclusion(
         len(descriptors),
         threshold,  # <- minimum distance between cluster centroids
     )
-    # for later visualisation on tmaps, umaps, tsnes, save leader indices
-    if save_cluster_leaders_to is not None:
-        np.savetxt(str(save_cluster_leaders_to), np.array(picks))
-        lg.debug(f"saved clustering to {save_cluster_leaders_to}")
-
     clusters: dict[int, list] = defaultdict(list)
     for i, idx in enumerate(picks):
         clusters[i].append(idx)
@@ -71,7 +65,6 @@ def _sphere_exclusion(
     ):
         pick = picks[i]
         sims[i, :] = DataStructs.BulkTanimotoSimilarity(descriptors[pick], descriptors)
-        sims[i, i] = 0
     lg.debug("Assigning datapoints to nearest cluster leaders")
     best = np.argmax(sims, axis=0)
     for i, idx in enumerate(best):

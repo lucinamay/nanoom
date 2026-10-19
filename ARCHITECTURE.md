@@ -14,7 +14,7 @@ them. modules split by task / context (mostly external package context):
 
 | module          | owns                                                                       |
 | --------------- | -------------------------------------------------------------------------- |
-| `clustering.py` | `cluster()` — descriptors → cluster label per row. uses sklearn (kmeans/dbscan/hdbscan), `chem.py`, or the built-in random/hash dummies. |
+| `clustering.py` | `cluster()` — descriptors → cluster label per row. uses sklearn (kmeans/dbscan/hdbscan), `chem.py`, or the built-in random/hash dummies. `merge_clusters()` joins clusters with close centroids; `evaluate()` scores a clustering (sklearn silhouette / calinski-harabasz / davies-bouldin). |
 | `chem.py`       | cheminformatics-specific (rdkit/bblean) cluster methods for bit-vector fingerprints. Imported lazily, only under the `chem` extra. |
 | `splitting.py`  | `split()` — dataframe + task columns → the same dataframe with a `split` column. Both the LP balancer and the sklearn fallback. |
 | `eval.py`       | leakage & balance reports/metrics of a performed split. |
@@ -52,12 +52,17 @@ in a single value-rank bin and skew it. qcut may be better, but neither approach
 extreme case of repeated values.
 we kept in `binning_approach="gbmt_splits"` for 'reproducing' gbmt-based results.
 
-**pulp/CBC, and the time limit returns rather than raises.** pulp ships with the
-solver CBC, so there's no need for installing separate solvers. Reaching *exact*
-optimality is much slower than near-optimality, so `time_limit_seconds` (default
-300, might be turned back to 60*60) returns the best solution found so far
-(instead of failing) (c.f. `relative_gap` allows stopping early on purpose).
-Past 1000 clusters/rows `split()` because "exact optimum" for that may not be realistic.
+**pulp/CBC; a time limit without an integer solution raises, unless warm-started.**
+pulp ships with the solver CBC, so there's no need for installing separate solvers.
+Reaching *exact* optimality is much slower than near-optimality, so at
+`time_limit_seconds` (default 300) CBC returns the best integer solution found so far
+(c.f. `relative_gap` allows stopping early on purpose). If it has found none, pulp
+reads back the LP relaxation (fractional assignments), and nanoom raises
+`RuntimeError("... non-integral ...")` rather than round it.
+`warm_start=True` (opt-in) hands CBC a greedy assignment (largest cluster first,
+into the split furthest below its target) as its first integer solution, so a time
+limit returns a valid, possibly less balanced split instead of raising.
+Past 1000 clusters `split()` warns, because "exact optimum" for that may not be realistic.
 
 **`split()` returns the dataframe, per row.** 
 Both methods return `df` with a `split` column, one value per row. 
@@ -89,10 +94,9 @@ pulp + scikit-learn.
   clusters stop representing real similarity. Currently the caller decides. An `auto`
   mode that tunes this against a held-out balance/leakage score is task 1 in
   [DEVELOPMENT.md](DEVELOPMENT.md), and the right objective for it is not settled.
-- **Should nanoom score cluster quality at all?** `clustering.evaluate()` is a
-  declared stub and `_silhouette_score` is written but unused. Silhouette on
-  fingerprints is weakly informative, and the metric that actually matters is
-  downstream split quality, not cluster compactness.
+- **Is cluster compactness worth scoring?** `clustering.evaluate()` scores it, but
+  silhouette on fingerprints is weakly informative, and the metric that actually
+  matters is downstream split quality (`eval.nearest_neighbour_distances`).
 - **Ordinal classification.** `_task_type` maps integer columns to plain
   classification, so an ordered readout (e.g. activity bands) loses its ordering when
   binned. Whether to add an explicit ordinal task type, or let callers pre-bin, is

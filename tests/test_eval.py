@@ -111,6 +111,13 @@ class TestNearestNeighbourDistances:
         out = ev.nearest_neighbour_distances(descriptors, splits, "euclidean")
         np.testing.assert_allclose(out, [10, 9, 9, 12])
 
+    def test_precomputed_matches_euclidean(self):
+        descriptors = np.array([[0.0], [10], [1], [13]])
+        square = np.abs(descriptors - descriptors.T)
+        splits = np.array([0, 1, 0, 1])
+        out = ev.nearest_neighbour_distances(square, splits, "precomputed")
+        np.testing.assert_allclose(out, [10, 9, 9, 12])
+
     def test_raises_on_single_split_and_length_mismatch(self):
         with pytest.raises(ValueError, match="need >= 2"):
             ev.nearest_neighbour_distances(np.zeros((3, 2)), np.zeros(3), "euclidean")

@@ -70,6 +70,9 @@ A `cluster` column of row indices is added so grouping and the audit functions
 below work the same in both modes. Note that the LP carries one binary variable per
 cluster per split, so cluster-free mode on a large frame gets slow; nanoom warns
 past 1000 clusters and suggests `relative_gap` for a fast near-optimal solve.
+If CBC finds no integer solution within `time_limit_seconds`, `split()` raises;
+pass `warm_start=True` to start CBC from a greedy assignment, so it always returns
+a valid split.
 
 For regression task columns, `method="tricarico"` bins values before balancing
 (`binning_approach=`, default `"qcut"`): `"qcut"` targets roughly equal n_datapoints per
